@@ -42,6 +42,14 @@ def crop(img, bounds):
     return img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
 
 
+def shrink(img, side=480):
+    """縮到長邊不超過 side；img 為 None 時回傳 None。"""
+    if img is None:
+        return None
+    scale = side / max(img.shape[:2])
+    return cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
+
+
 # ---------------------------------------------------------------- 照片 ----
 
 class PhotoLibrary:
@@ -116,6 +124,41 @@ class PhotoLibrary:
                 if agree >= SAME_PHOTO:
                     return str(self.names[i]), agree
         return None
+
+    def verify(self, image, path):
+        """截圖中的照片和這個檔案的一致區塊比例（0～1）。"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        inliers, _, h = score(features(gray), features(path))
+        return similarity(gray, path, h) if inliers >= 8 else 0.0
+
+    def nearby(self, chat_dir, after, before, used, limit=6):
+        """這個聊天室快取中編號介於 after 和 before 之間、還沒用過的訊息（含沒有縮圖的）。
+        只知道一邊時，取最靠近那一邊的 limit 則。"""
+        found = sorted(int(n) for n, e in self.entries.items()
+                       if e["dir"] == chat_dir and int(n) not in used
+                       and (after is None or int(n) > after) and (before is None or int(n) < before))
+        if after is None and before is None:
+            return []
+        return found[:limit] if after is not None else found[-limit:]
+
+    def match_nearby(self, image, chat_dir, after, before, used):
+        """縮圖索引找不到時，逐一比對編號相鄰的訊息：縮圖，再試一般版或原檔。
+        回傳 (編號或 None, [(編號, 有哪些版本, 一致比例)])。"""
+        tried = []
+        for number in self.nearby(chat_dir, after, before, used):
+            n = str(number)
+            entry, best = self.entries[n], 0.0
+            if "thumb" in entry and os.path.exists(self.thumb_path(n)):
+                best = self.verify(image, self.thumb_path(n))
+            if best < SAME_PHOTO and ("plain" in entry or "original" in entry):
+                path, _, kind = self.fetch(n)
+                if kind != "mp4":
+                    best = max(best, self.verify(image, path))
+            variants = "/".join(v for v in ("thumb", "plain", "original") if v in entry)
+            tried.append((number, variants, round(best, 2)))
+            if best >= SAME_PHOTO:
+                return n, tried
+        return None, tried
 
     def detect_chat_dir(self, images):
         """用幾張截圖中的照片，找出這個聊天室在快取中的目錄。"""
@@ -415,11 +458,15 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if chat_dir:
             photo_lib.build_index({chat_dir})
 
-    def photo_item(number):
+    def photo_item(number, shot=None):
         path, variant, kind = photo_lib.fetch(number)
         thumb_rel = f"media/photos/{number}_t.jpg"
         if not os.path.exists(os.path.join(site, thumb_rel)):
-            shutil.copyfile(photo_lib.thumb_path(number), os.path.join(site, thumb_rel))
+            if os.path.exists(photo_lib.thumb_path(number)):
+                shutil.copyfile(photo_lib.thumb_path(number), os.path.join(site, thumb_rel))
+            else:                     # 快取中沒有縮圖：從大圖縮小，影片則用截圖
+                small = shrink(imread(path)) if kind != "mp4" else None
+                imwrite(os.path.join(site, thumb_rel), small if small is not None else shot)
         full_rel = f"media/photos/{number}.{kind}"
         if not os.path.exists(os.path.join(site, full_rel)):
             shutil.copyfile(path, os.path.join(site, full_rel))
@@ -428,6 +475,7 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
 
     result, stats = {}, Counter()
     numbers, hidden = {}, []          # 訊息位置 -> 快取編號；橫排中沒露出來的照片
+    missed = []                       # 縮圖索引找不到的照片／影片：(位置, 截圖)
     for pos, (msg, slot) in enumerate(zip(chat.messages, slots)):
         if msg.kind not in ("sticker", "photo", "video") or slot is None:
             continue
@@ -455,8 +503,25 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if item is None:
             item = {"type": "sticker" if msg.kind == "sticker" else "image",
                     "src": save_crop(f"{msg.idx}_{slot[1]}", image), "source": "screenshot"}
-        stats[f"{msg.kind}:{item['source']}"] += 1
+            if msg.kind in ("photo", "video") and photo_lib and chat_dir:
+                missed.append((pos, image))
         result.setdefault(msg.idx, []).append(item)
+
+    # 縮圖索引找不到的：在前後已對到的編號之間逐一比對（也涵蓋快取中沒有縮圖的訊息）
+    for pos, image in missed:
+        after = next((numbers[p] for p in range(pos - 1, -1, -1) if p in numbers), None)
+        before = next((numbers[p] for p in range(pos + 1, len(slots)) if p in numbers), None)
+        number, tried = photo_lib.match_nearby(image, chat_dir, after, before, set(numbers.values()))
+        items = result[chat.messages[pos].idx]
+        k = next(i for i, it in enumerate(items) if it["source"] == "screenshot")
+        if number is None:
+            items[k]["tried"] = tried
+            continue
+        items[k] = photo_item(number, image)
+        numbers[pos] = int(number)
+    for msg in chat.messages:
+        for it in result.get(msg.idx, []):
+            stats[f"{msg.kind}:{it['source']}"] += 1
 
     # 橫排中沒露出來的照片：依快取編號推斷（同一批送出的照片編號相鄰）
     if hidden and photo_lib and chat_dir:

@@ -6,7 +6,7 @@ from collections import Counter
 
 from .align import align, infer_me, summarize
 from .capture import Capture
-from .media import resolve
+from .media import expand_albums, resolve
 from .render import PAGE_MIN, render
 from .screen import parse_dump
 from .stitch import stitch
@@ -71,6 +71,15 @@ def media_summary(chat, media):
                 got["快取"] += 1
         order = ("快取", "依編號推斷", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
+    for m in chat.messages:
+        items = media["media"].get(str(m.idx))
+        if m.kind not in ("photo", "video", "sticker") or (items and items[0]["source"] != "screenshot"):
+            continue
+        where = f"site/{items[0]['src']}" if items else "畫面上沒有"
+        lines.append(f"    {m.kind} {m.date} {m.time} {m.sender}：{where}")
+        if items and "tried" in items[0]:
+            tried = "、".join(f"{n}（{v}）{s:.2f}" for n, v, s in items[0]["tried"]) or "沒有"
+            lines.append(f"        前後已對到的照片之間的快取編號（有哪些檔案）一致比例：{tried}")
     return lines
 
 
@@ -94,10 +103,14 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         log("對齊畫面與 txt……")
         pairs = align(chat.messages, rows)
         info = summarize(chat.messages, rows, pairs)
-        report.append("對齊結果（對到 / 總數；一次傳多張的照片在畫面上只有一列，只會算到其中一則）：")
+        # 一次傳多張的照片在畫面上只有一列，對齊只配給其中一則；其餘的由同一列取得
+        slots = expand_albums(chat.messages, uniques, pairs)
+        shared = Counter(m.kind for m, (j, _), s in zip(chat.messages, pairs, slots) if j is None and s)
+        report.append("對齊結果（對到 / 總數）：")
         for kind, (total, hit) in sorted(info["by_kind"].items(), key=lambda kv: -kv[1][0]):
-            report.append(f"    {kind}：{hit} / {total}")
-        missed = [m for m, (j, _) in zip(chat.messages, pairs) if j is None]
+            note = f"（其中 {shared[kind]} 則和同一批照片共用畫面上的一列）" if shared[kind] else ""
+            report.append(f"    {kind}：{hit + shared[kind]} / {total}{note}")
+        missed = [m for m, s in zip(chat.messages, slots) if s is None]
         report.append(f"沒對到畫面的訊息：{len(missed)} 則")
         for m in missed[:30]:
             report.append(f"    {m.date} {m.time} {m.sender} {m.kind} {m.body[:20]!r}")

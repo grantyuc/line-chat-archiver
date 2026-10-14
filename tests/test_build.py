@@ -100,3 +100,18 @@ def test_sparse_months_share_a_page(tmp_path):
     assert "2026-01.html" not in search and all(name in search for name in pages)
     page = open(os.path.join(site, pages[0]), encoding="utf-8").read()
     assert "2026/1/2" in page and "1月第0則" in page
+
+
+def test_report_counts_album_photos_as_matched(tmp_path):
+    work = str(tmp_path / "albums")
+    txt, items = make_chat(days=3, per_day=20, seed=4, albums=True)
+    chat = parse(txt)
+    save_chat(work, chat)
+    device = FakeChat(items)
+    Capture(device, work, idle_wait=0, log=lambda *a: None).run()
+    build(work, device=device, log=lambda *a: None)
+    report = open(os.path.join(work, "report.txt"), encoding="utf-8").read()
+    photos = sum(1 for m in chat.messages if m.kind == "photo")
+    shared = sum(it["count"] - 1 for it in device.items if it["kind"] == "album")
+    assert f"photo：{photos} / {photos}（其中 {shared} 則和同一批照片共用畫面上的一列）" in report
+    assert "沒對到畫面的訊息：0 則" in report

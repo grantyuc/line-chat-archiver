@@ -9,7 +9,7 @@ from archiver.screen import parse_dump
 from archiver.stitch import stitch
 from archiver.txt_parser import parse
 from tests.chatgen import make_chat
-from archiver.media import STICKERS as STICKERS_DIR
+from archiver.media import CHATS, STICKERS as STICKERS_DIR
 from tests.fakechat import CHAT_ID, FakeChat
 
 
@@ -158,3 +158,47 @@ def test_infer_hidden():
     assert infer_hidden(numbers, {100, 101, 102}, 101) == 103
     assert infer_hidden(numbers, {100, 101}, 101, before=102) is None    # 快取中缺了這張
     assert infer_hidden(numbers, set(), 120) is None
+
+
+def test_photo_without_thumb_is_found_between_its_neighbours(tmp_path):
+    txt, items = make_chat(days=3, per_day=25, seed=11)
+    chat = parse(txt)
+    device = FakeChat(items)
+    photos = [it for it in device.items if it["kind"] == "photo"]
+    assert len(photos) >= 3
+    lost = photos[len(photos) // 2]
+    del device.files[f"{CHATS}/{CHAT_ID}/messages/{lost['number']}.thumb"]       # 快取中只剩大圖
+    work = tmp_path / "work"
+    cap = Capture(device, str(work), idle_wait=0, log=lambda *a: None)
+    steps = cap.run()
+    screens = []
+    for s in steps:
+        with open(cap.path(s["step"], "xml"), "rb") as f:
+            screens.append(parse_dump(f.read()))
+    uniques, _ = stitch(screens, [s["dy"] for s in steps])
+    pairs = align(chat.messages, [u.row for u in uniques])
+    data = resolve(str(work), chat, uniques, pairs, device=device, chat_dir=CHAT_ID, log=lambda *a: None)
+
+    msg = [m for m, it in zip(chat.messages, [i for i in device.items if i["kind"] != "date"]) if it is lost][0]
+    media = data["media"][str(msg.idx)][0]
+    assert media["number"] == lost["number"] and media["source"] in ("plain", "original")
+    assert os.path.exists(os.path.join(work, "site", media["src"]))
+    assert "photo:screenshot" not in data["stats"]
+
+
+def test_media_summary_lists_screenshot_fallbacks():
+    from types import SimpleNamespace as NS
+
+    from archiver.build import media_summary
+    msgs = [NS(idx=1, kind="photo", date="2026-01-30", time="13:58", sender="威廷"),
+            NS(idx=2, kind="sticker", date="2026-02-01", time="09:00", sender="我"),
+            NS(idx=3, kind="photo", date="2026-02-02", time="10:00", sender="我")]
+    media = {"media": {"1": [{"source": "screenshot", "src": "media/crops/1_0.png",
+                              "tried": [[1234, "thumb/plain", 0.41]]}],
+                       "2": [{"source": "screenshot", "src": "media/crops/2_0.png"}],
+                       "3": [{"source": "plain", "src": "media/photos/9_t.jpg"}]}}
+    text = "\n".join(media_summary(NS(messages=msgs), media))
+    assert "photo：共 2 則，快取 1、截圖裁切 1" in text
+    assert "photo 2026-01-30 13:58 威廷：site/media/crops/1_0.png" in text
+    assert "1234（thumb/plain）0.41" in text
+    assert "sticker 2026-02-01 09:00 我：site/media/crops/2_0.png" in text
