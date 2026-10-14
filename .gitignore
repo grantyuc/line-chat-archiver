@@ -2,3 +2,6 @@
 poc/out/
 __pycache__/
 *.pyc
+# 封存工作目錄（含聊天內容、截圖、照片）
+work/
+.pytest_cache/

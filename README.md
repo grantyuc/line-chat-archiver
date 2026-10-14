@@ -1,0 +1,115 @@
+# LINE 聊天記錄封存
+
+把 LINE 手機版匯出的純文字聊天記錄，和手機畫面擷取、手機上的貼圖與照片快取結合，輸出成離線可看、LINE 風格的靜態網站：
+
+- 文字來自 txt，可以反白、Ctrl+F，首頁還能搜尋全部月份。
+- `[貼圖]` 換成貼圖原檔（含動畫），`[照片]` 換成快取中的一般版或原檔，點開可放大。
+- 依月份分頁，避免單一頁面太大。
+
+不需要 Root。手機需開啟 USB 偵錯。設計依據見 [`poc/README.md`](poc/README.md) 的實機測試。
+
+## 運作方式
+
+| 步驟 | 指令 | 做什麼 |
+|---|---|---|
+| 1 解析 | `parse` | 解析 txt：日期、時間、發話者、訊息類型 |
+| 2 擷取 | `capture` | 從最新訊息往上捲，每一步截圖＋uiautomator dump，到最舊的訊息自動停止 |
+| 3 輸出 | `build` | 合併各步畫面去重 → 和 txt 逐則對齊 → 從手機快取取得貼圖和照片 → 產生網站 |
+
+照片取得方式：聊天畫面上顯示的就是快取裡的縮圖，所以先拉回縮圖比對，找到對應的訊息編號後，只拉那一則的最佳版本（原檔 > 一般版 > 縮圖）。找不到的貼圖和照片用截圖裁切。
+
+## 安裝
+
+1. Android SDK Platform-Tools（`adb`），並加入 PATH。
+2. Python 3.10 以上：
+   ```
+   pip install -r requirements.txt
+   ```
+
+## 封存一個聊天室
+
+以下以「威廷(Waiting)」為例，工作目錄用 `work/waiting`。`work/` 已加入 `.gitignore`，不會被 commit。
+
+1. **匯出 txt。** 在手機上打開聊天室 → 右上角選單 ≡ →（其他）設定 → 傳送聊天記錄，把檔案存到電腦，例如 `chats/waiting.txt`。
+
+2. **解析 txt：**
+   ```
+   python main.py parse chats/waiting.txt --work work/waiting
+   ```
+   會印出訊息數、日期範圍、各類型數量，以及判斷出的「自己」是誰。
+
+3. **準備手機：**
+   - 解鎖，打開這個聊天室，停在最新訊息（最底部）。
+   - 開啟勿擾模式，避免通知橫幅蓋住畫面。
+   - 讓螢幕保持常亮：`adb shell svc power stayon usb`（全部做完後執行 `adb shell svc power stayon false` 還原）。
+
+4. **擷取畫面：**
+   ```
+   python main.py capture --work work/waiting
+   ```
+   - 過程中不要碰手機。每一步約 6～8 秒，會印出進度。
+   - 到最舊的訊息會自動停止。
+   - 按 Ctrl+C 可以中斷。再執行同一個指令會接續：先確認畫面和最後一步有重疊，再繼續往上捲，所以中斷後不要捲動聊天室。
+
+5. **輸出網站：**
+   ```
+   python main.py build --work work/waiting
+   ```
+   - 第一次會拉回貼圖快取（約數百 MB）和照片縮圖，之後重用。
+   - 聊天室的快取目錄會用照片自動找出來；也可以用 `--chat-dir u…` 直接指定（測試 7 的方法）。
+   - 完成後打開 `work/waiting/site/index.html`。
+
+也可以用 `python main.py run chats/waiting.txt --work work/waiting` 一次做完 2～5。
+
+### 只想先看文字
+
+只執行 `parse` 和 `build`（不 `capture`），網站會有全部文字，貼圖和照片顯示為佔位符。
+
+## 檢查結果
+
+`work/<名稱>/report.txt` 會列出：
+
+- 各類型訊息對到畫面的數量，例如 `photo：41 / 42`。
+- 低信心的配對，以及畫面上多出來、對不到 txt 的列（例如「以下為尚未閱讀的訊息」）。
+- 貼圖、照片各有幾則來自快取、幾則用截圖裁切。
+
+有問題時，請貼回 `report.txt`。
+
+## 除錯工具
+
+檢查一份 uiautomator dump 解析出哪些列：
+
+```
+python main.py inspect poc/out/t2_media.xml
+```
+
+會列出每一列的位置、類型、左右側、時間、發話者。類型是 `unknown` 的列會列出它的元件 id，方便新增支援。
+
+## 工作目錄內容
+
+| 路徑 | 內容 |
+|---|---|
+| `chat.json` | 解析後的 txt |
+| `capture/` | 每一步的截圖（`00012.png`）、dump（`00012.xml`）、`steps.jsonl` |
+| `cache/` | 從手機拉回的貼圖快取、照片縮圖與大圖、索引 |
+| `alignment.json` | 每則訊息對到哪一步的哪一列 |
+| `media.json` | 每則訊息的媒體檔與來源 |
+| `site/` | 輸出的網站 |
+| `report.txt` | 報告 |
+
+## 目前的限制
+
+- 只支援繁體中文介面的匯出格式與 LINE 畫面。
+- 動態貼圖以第一格畫面比對；截到其他格時可能比對不到，會改用截圖裁切。
+- 影片只有在快取中有 MP4 時才能播放，否則只顯示縮圖。
+- 只有縮圖的照片（測試聊天室約 12%）目前就用縮圖；尚未整合「照片・影片」批次下載。
+- 檔案、位置、通話、LINE Pay 等訊息只顯示 txt 中的文字。
+
+## 開發
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+測試用模擬手機（`tests/fakechat.py`）產生和實機結構相同的截圖、dump 和快取，可以不接手機跑完整流程。
