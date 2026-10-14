@@ -46,6 +46,11 @@ def shell(cmd, timeout=120):
     return adb_text("shell", cmd, timeout=timeout)
 
 
+def wake_screen():
+    """螢幕關著時點亮它（已亮時沒有作用）。解鎖仍要手動。"""
+    shell("input keyevent KEYCODE_WAKEUP")
+
+
 def screencap_png():
     return adb("exec-out", "screencap", "-p")
 

@@ -23,7 +23,7 @@ from collections import Counter
 import cv2
 import numpy as np
 
-from common import OUT_DIR, Report, decode_png, imread, imwrite, out_path, screencap_png
+from common import LINE_PKG, OUT_DIR, Report, decode_png, imread, imwrite, out_path, screencap_png, wake_screen
 from imgmatch import SAME_PHOTO, features, score, similarity
 from t2_ui_dump import dump, parse
 
@@ -88,6 +88,8 @@ def main():
         with open(args.xml, "rb") as f:
             xml = f.read()
     else:
+        wake_screen()
+        time.sleep(1)
         msg, elapsed, xml = dump()
         screen = decode_png(screencap_png())
         log(f"dump 耗時 {elapsed:.1f} 秒")
@@ -97,6 +99,8 @@ def main():
         with open(out_path("t8_screen.xml"), "wb") as f:
             f.write(xml)
 
+    if LINE_PKG.encode() not in xml:
+        sys.exit("畫面上沒有 LINE：螢幕可能關閉或鎖定，或目前不在 LINE 聊天室。請解鎖並打開聊天室再執行。")
     nodes = parse(xml)
     lists = [n["bounds"] for n in nodes if n["rid"] == "chathistory_message_list"]
     top, bottom = (lists[0][1], lists[0][3]) if lists else (0, screen.shape[0])
