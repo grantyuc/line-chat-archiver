@@ -69,7 +69,7 @@ class U2Device(Device):
     fast = True
     DOWN, UP, MOVE = 0, 1, 2            # MotionEvent 的動作
 
-    def __init__(self, serial=None):
+    def __init__(self, serial=None, reuse=True):
         try:
             import uiautomator2 as u2
         except ImportError:
@@ -79,7 +79,9 @@ class U2Device(Device):
             self.d.info                                   # 確認服務已啟動
         except Exception as e:
             raise DeviceError(f"uiautomator2 連線失敗：{e}")
-        self.rpc_error = ""
+        self.rpc, self.rpc_error = None, "已用 --new-connections 關閉連線重複使用"
+        if not reuse:
+            return
         try:
             self.rpc = Rpc(AdbConnection(self.d._dev, self.d._device_server_port))
             self.rpc.call("deviceInfo")
@@ -161,11 +163,12 @@ class U2Device(Device):
                 pass
 
 
-def connect(backend="auto", log=print):
-    """backend：auto（有裝 uiautomator2 就用，否則用 adb）、u2、adb。"""
+def connect(backend="auto", reuse=True, log=print):
+    """backend：auto（有裝 uiautomator2 就用，否則用 adb）、u2、adb。
+    reuse=False 時每個請求各開一條連線（uiautomator2 原本的方式）。"""
     if backend in ("auto", "u2"):
         try:
-            device = U2Device()
+            device = U2Device(reuse=reuse)
             log("使用 uiautomator2（快速模式）")
             return device
         except DeviceError as e:
