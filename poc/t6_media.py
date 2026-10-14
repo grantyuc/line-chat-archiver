@@ -80,7 +80,8 @@ def cmd_scan(args):
 
 def cmd_match(args):
     import cv2
-    import numpy as np
+
+    from imgmatch import features, score
 
     shot = imread(args.image, cv2.IMREAD_GRAYSCALE)
     if shot is None:
@@ -88,31 +89,18 @@ def cmd_match(args):
     if args.box:
         x1, y1, x2, y2 = map(int, args.box.split(","))
         shot = shot[y1:y2, x1:x2]
-    orb = cv2.ORB_create(3000)
-    k1, d1 = orb.detectAndCompute(shot, None)
-    if d1 is None or len(k1) < 10:
+    query = features(shot)
+    if query is None or len(query[0]) < 10:
         sys.exit("縮圖上的特徵點太少，請框大一點或換一張照片。")
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+    k1 = query[0]
 
     results = []
     for path in sorted(glob.glob(os.path.join(args.dir, "*"))):
-        img = imread(path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
+        target = features(path)
+        if target is None:
             continue
-        scale = 1000 / max(img.shape[:2])
-        if scale < 1:
-            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        k2, d2 = orb.detectAndCompute(img, None)
-        inliers, good = 0, []
-        if d2 is not None and len(k2) >= 2:
-            pairs = matcher.knnMatch(d1, d2, k=2)
-            good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < 0.75 * p[1].distance]
-        if len(good) >= 8:
-            src = np.float32([k1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-            dst = np.float32([k2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-            _, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
-            inliers = int(mask.sum()) if mask is not None else 0
-        results.append((inliers, len(good), os.path.basename(path)))
+        inliers, good = score(query, target)
+        results.append((inliers, good, os.path.basename(path)))
 
     if not results:
         sys.exit(f"{args.dir} 裡沒有可讀的圖片。")
