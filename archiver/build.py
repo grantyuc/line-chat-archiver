@@ -2,6 +2,7 @@
 import bisect
 import json
 import os
+from collections import Counter
 
 from .align import align, infer_me, summarize
 from .capture import Capture
@@ -50,6 +51,29 @@ def previous_message(pairs, row_index):
     return matched[k - 1][1] if k else None
 
 
+def media_summary(chat, media):
+    """每則貼圖、照片、影片最後拿到什麼：快取、依編號推斷、截圖，或沒有圖。"""
+    lines = ["每則媒體訊息的結果："]
+    for kind in ("photo", "video", "sticker"):
+        msgs = [m for m in chat.messages if m.kind == kind]
+        if not msgs:
+            continue
+        got = Counter()
+        for m in msgs:
+            items = media["media"].get(str(m.idx))
+            if not items:
+                got["沒有圖"] += 1
+            elif items[0].get("inferred"):
+                got["依編號推斷"] += 1
+            elif items[0]["source"] == "screenshot":
+                got["截圖裁切"] += 1
+            else:
+                got["快取"] += 1
+        order = ("快取", "依編號推斷", "截圖裁切", "沒有圖")
+        lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
+    return lines
+
+
 def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, log=print):
     chat = load_chat(workdir)
     steps, screens = load_capture(workdir)
@@ -69,7 +93,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         log("對齊畫面與 txt……")
         pairs = align(chat.messages, rows)
         info = summarize(chat.messages, rows, pairs)
-        report.append("對齊結果（對到 / 總數）：")
+        report.append("對齊結果（對到 / 總數；一次傳多張的照片在畫面上只有一列，只會算到其中一則）：")
         for kind, (total, hit) in sorted(info["by_kind"].items(), key=lambda kv: -kv[1][0]):
             report.append(f"    {kind}：{hit} / {total}")
         missed = [m for m, (j, _) in zip(chat.messages, pairs) if j is None]
@@ -93,6 +117,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
                         stickers=stickers, photos=photos, refresh=refresh, log=log)
         report.append("媒體來源：")
         report += [f"    {k}：{v}" for k, v in sorted(media["stats"].items())]
+        report += media_summary(chat, media)
     else:
         report.append("還沒有擷取畫面：網站只有文字，媒體顯示為佔位符。")
     after = {}

@@ -33,6 +33,8 @@ def test_end_to_end_site(tmp_path):
     for kind in ("text", "photo", "sticker"):
         total = sum(1 for m in chat.messages if m.kind == kind)
         assert f"{kind}：{total} / {total}" in report
+    photos = sum(1 for m in chat.messages if m.kind == "photo")
+    assert f"photo：共 {photos} 則，快取 {photos}" in report
 
 
 def test_text_only_site_without_capture(tmp_path):
