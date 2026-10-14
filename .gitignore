@@ -1,0 +1,4 @@
+# 實機測試輸出含私人聊天內容，不要 commit
+poc/out/
+__pycache__/
+*.pyc
