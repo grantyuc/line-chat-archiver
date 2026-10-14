@@ -77,6 +77,8 @@ class FakeChat:
 
     def __init__(self, items, fling=0.04, fast=False):
         self.items, self.fling, self.fast = [], fling, fast
+        self.sticky = ()            # 在這些類型的列上按下去拖，聊天列表不會捲動（例如照片橫排）
+        self.wall, self.wall_left = None, None   # 捲不過這個位置；wall_left 次之後才放行（None 為永遠）
         y = 40
         prev_other = False
         for i, item in enumerate(items):
@@ -205,7 +207,18 @@ class FakeChat:
 
     def drag(self, x, y1, y2):
         """快速模式的拖曳：停住再放開，沒有慣性。"""
-        self.offset = max(0, self.offset - (y2 - y1))
+        for it, sy1, sy2 in self.visible():
+            xa, xb = self._x_span(it)
+            if it["kind"] in self.sticky and sy1 <= y1 <= sy2 and xa <= x <= xb:
+                return
+        target = max(0, self.offset - (y2 - y1))
+        if self.wall is not None and target < self.wall:
+            if self.wall_left is None or self.wall_left > 0:     # 還在載入更舊的訊息
+                self.wall_left = None if self.wall_left is None else self.wall_left - 1
+                target = max(target, min(self.offset, self.wall))
+            else:
+                self.wall = None
+        self.offset = target
 
     def screencap(self):
         """一般模式和 adb 一樣傳回 PNG；快速模式和 uiautomator2 一樣傳回 JPEG。"""

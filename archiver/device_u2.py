@@ -30,11 +30,13 @@ class AdbConnection(http.client.HTTPConnection):
     def __init__(self, adb_device, port, timeout=30):
         super().__init__("127.0.0.1", port, timeout=timeout)
         self.adb_device, self.remote_port = adb_device, port
+        self.opened = 0
 
     def connect(self):
         import adbutils
         self.sock = self.adb_device.create_connection(adbutils.Network.TCP, self.remote_port)
         self.sock.settimeout(self.timeout)
+        self.opened += 1
 
 
 class Rpc:
@@ -46,7 +48,7 @@ class Rpc:
         self.conn, self.id = conn, 0
 
     def call(self, method, *params):
-        self.id += 1
+        self.id += 1                                    # 也是請求次數
         body = json.dumps({"jsonrpc": "2.0", "id": self.id, "method": method, "params": list(params)})
         for attempt in (0, 1):
             try:
@@ -77,19 +79,26 @@ class U2Device(Device):
             self.d.info                                   # 確認服務已啟動
         except Exception as e:
             raise DeviceError(f"uiautomator2 連線失敗：{e}")
+        self.rpc_error = ""
         try:
             self.rpc = Rpc(AdbConnection(self.d._dev, self.d._device_server_port))
             self.rpc.call("deviceInfo")
-        except Exception:
-            self.rpc = None                               # 版本不同或連不上：用 uiautomator2 原本的方式
+        except Exception as e:                            # 版本不同或連不上：用 uiautomator2 原本的方式
+            self.rpc, self.rpc_error = None, f"{type(e).__name__}: {e}"
 
     def _call(self, method, *params):
         if self.rpc is not None:
             try:
                 return self.rpc.call(method, *params)
-            except Exception:
-                self.rpc = None                           # 改用 uiautomator2 原本的方式（它會自動重啟服務）
+            except Exception as e:                        # 改用 uiautomator2 原本的方式（它會自動重啟服務）
+                self.rpc, self.rpc_error = None, f"{type(e).__name__}: {e}"
         return getattr(self.d.jsonrpc, method)(*params)
+
+    def status(self):
+        """連線方式的摘要，印在擷取結束時，用來確認連線有沒有重複使用。"""
+        if self.rpc is not None:
+            return f"uiautomator2 連線：{self.rpc.id} 個請求用了 {self.rpc.conn.opened} 條連線"
+        return f"uiautomator2 連線：每個請求各開一條（{self.rpc_error[:200]}）"
 
     def screencap(self):
         """回傳 (JPEG 位元組, 影像)。"""
@@ -120,12 +129,19 @@ class U2Device(Device):
             return xml.encode("utf-8")                    # 空的畫面：交給呼叫端判斷
         raise DeviceError(f"dump 失敗：{last}")
 
-    def drag(self, x, y1, y2, hold=0.12):
-        """由 y1 一次拖到 y2，停住再放開。停住一陣子再放開，放開時速度為零，不會慣性滑動。"""
+    def drag(self, x, y1, y2, steps=3, hold=0.12):
+        """由 y1 拖到 y2 後停住再放開（放開時速度為零，不會慣性滑動）。
+
+        先小移一段越過觸控誤差範圍，再分三段拖完（實機驗證過的手勢）。不能一次跳到終點：
+        實機上這樣做，捲了一步之後就捲不動了。
+        """
+        slop = 40 if y2 > y1 else -40
         self._call("injectInputEvent", self.DOWN, x, y1, 0)
-        self._call("injectInputEvent", self.MOVE, x, y2, 0)
+        self._call("injectInputEvent", self.MOVE, x, y1 + slop, 0)
+        for k in range(1, steps + 1):
+            self._call("injectInputEvent", self.MOVE, x, y1 + slop + (y2 - y1) * k // steps, 0)
         time.sleep(hold)
-        self._call("injectInputEvent", self.UP, x, y2, 0)
+        self._call("injectInputEvent", self.UP, x, y2 + slop, 0)
 
     def swipe(self, x, y1, y2, duration_ms):
         self.d.swipe(x, y1, x, y2, duration=duration_ms / 1000)

@@ -70,6 +70,8 @@ def test_falls_back_to_uiautomator2_and_drag_sends_down_move_up():
     dev = object.__new__(U2Device)
     dev.rpc, dev.d = Broken(), type("D", (), {"jsonrpc": Proxy()})()
     dev.drag(540, 600, 1800, hold=0)
-    assert dev.rpc is None
-    assert sent == [("injectInputEvent", (0, 540, 600, 0)), ("injectInputEvent", (2, 540, 1800, 0)),
-                    ("injectInputEvent", (1, 540, 1800, 0))]
+    assert dev.rpc is None and "adb 斷線" in dev.status()
+    # 按下 → 小移越過觸控誤差 → 分三段拖完 → 放開
+    assert sent == [("injectInputEvent", (0, 540, 600, 0)), ("injectInputEvent", (2, 540, 640, 0)),
+                    ("injectInputEvent", (2, 540, 1040, 0)), ("injectInputEvent", (2, 540, 1440, 0)),
+                    ("injectInputEvent", (2, 540, 1840, 0)), ("injectInputEvent", (1, 540, 1840, 0))]

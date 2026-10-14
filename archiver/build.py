@@ -93,7 +93,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         uniques, warnings = stitch(screens, [s["dy"] for s in steps])
         rows = [u.row for u in uniques]
         report.append(f"擷取：{len(steps)} 步，去重後 {len(rows)} 列"
-                      + ("" if any(s.get("done") for s in steps) else "（尚未捲到最舊的訊息）"))
+                      + ("" if steps and steps[-1].get("done") else "（尚未捲到最舊的訊息）"))
         report += ["警告：" + w for w in warnings]
         if not chat.me:
             first = align(chat.messages, rows, use_side=False)

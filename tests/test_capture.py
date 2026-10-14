@@ -104,3 +104,59 @@ def test_fast_mode_shows_every_tall_photo_whole(tmp_path):
     tall = [u for u in uniques if u.row.kind == "photo"]
     assert len(tall) == len(photos)
     assert all(not u.row.partial and u.row.bounds[1] >= 278 + 126 for u in tall)   # 也不在浮動日期條底下
+
+
+def oldest(items):
+    from types import SimpleNamespace as NS
+
+    from archiver.capture import oldest_texts
+    texts = oldest_texts([NS(kind=it["kind"], body=it["text"]) for it in items if it["kind"] != "date"])
+    assert texts
+    return texts
+
+
+def test_drag_blocked_by_a_row_is_retried_elsewhere(tmp_path):
+    _, items = make_chat(days=3, seed=4, albums=True)
+    device = FakeChat(items, fast=True)
+    device.sticky = ("album",)
+    cap, steps = run_capture(tmp_path, device, oldest=oldest(items))
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    uniques, warnings = stitch(screens, offsets)
+    assert warnings == [] and len(uniques) == len(items)
+
+
+def test_slow_loading_is_not_taken_for_the_top(tmp_path):
+    _, items = make_chat(days=3)
+    device = FakeChat(items, fast=True)
+    device.wall, device.wall_left = device.offset // 2, 5          # 捲到一半要等 5 次才載入更舊的
+    cap, steps = run_capture(tmp_path, device, oldest=oldest(items))
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    assert got(stitch(screens, offsets)[0]) == expected(items)
+
+
+def test_stuck_capture_stops_without_done_and_resumes(tmp_path):
+    _, items = make_chat(days=3)
+    device = FakeChat(items, fast=True)
+    device.wall = device.offset // 2                                # 永遠捲不過去
+    cap, steps = run_capture(tmp_path, device, oldest=oldest(items))
+    assert not steps[-1].get("done") and device.offset == device.wall
+    device.wall = None                                              # 使用者處理好手機畫面
+    cap, steps = run_capture(tmp_path, device, oldest=oldest(items))
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    assert got(stitch(screens, offsets)[0]) == expected(items)
+
+
+def test_false_done_without_txt_is_rechecked_on_the_next_run(tmp_path):
+    _, items = make_chat(days=3)
+    device = FakeChat(items, fast=True)
+    device.wall = device.offset // 2
+    cap, steps = run_capture(tmp_path, device)                      # 沒有 txt 可以對照：誤判到頂
+    assert steps[-1]["done"] and device.offset > 0
+    device.wall = None
+    cap, steps = run_capture(tmp_path, device)
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    assert got(stitch(screens, offsets)[0]) == expected(items)

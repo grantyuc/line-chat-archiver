@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 
 from archiver.build import build, load_chat, save_chat
-from archiver.capture import Capture, CaptureError
+from archiver.capture import Capture, CaptureError, oldest_texts
 from archiver.device import Device, DeviceError
 from archiver.device_u2 import connect
 from archiver.render import PAGE_MIN
@@ -89,9 +89,13 @@ def print_unknown_trees(xml):
 
 
 def cmd_capture(args):
+    # txt 最前面的訊息用來確認真的捲到頂了；還沒 parse 時不檢查
+    has_txt = os.path.exists(os.path.join(args.work, "chat.json"))
+    oldest = oldest_texts(load_chat(args.work).messages) if has_txt else []
     device = connect(args.backend)
     try:
-        Capture(device, args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps).run()
+        Capture(device, args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps,
+                oldest=oldest).run()
     finally:
         if hasattr(device, "close"):
             device.close()

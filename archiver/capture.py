@@ -5,8 +5,11 @@
   拖完後下緣還要留在畫面內，下一步它就會完整出現。所以每一列都至少完整出現在一張截圖裡，
   一般情況每步可捲聊天區的四分之三。
 - 位移估計用截圖的重疊區（實機測試 5）；比對分數太低時改用 dump 中同一則訊息的位置差。
-- 連續 stop_after 步沒有位移就判定到頂。
+- 捲不動時換個位置再拖（有些列會攔住觸控），並逐次拉長等待（可能正在載入更舊的訊息）。
+  連續 stop_after 步沒有位移，而且畫面上出現 txt 最前面的訊息，才判定到頂；
+  一直捲不動、最舊的訊息卻還沒出現時，停下來但不標成完成。
 - 中斷後再執行會接續：先確認目前畫面和最後一步的截圖有重疊，再繼續往上捲。
+  已標成完成的也會再試著往上捲，確認真的到頂。
 """
 import json
 import os
@@ -17,15 +20,25 @@ from contextlib import contextmanager
 
 import cv2
 
+from .align import text_similarity
 from .imgio import imread
 from .offset import LOW_SCORE, find_offset, wait_still
 from .screen import parse_dump
 
 SLOW_DRAG = 0.5          # adb 模式的滑動有慣性，距離不固定，維持每步半個聊天區
+DRAG_X = (0.5, 0.12, 0.88)   # 捲不動時依序換到這些水平位置（畫面寬度的比例）再拖
+MAX_WAIT = 10.0          # 捲不動時，每次最多等幾秒
 
 
 class CaptureError(RuntimeError):
     pass
+
+
+def oldest_texts(messages, count=15):
+    """txt 最前面 count 則訊息中，整段對話只出現一次的文字訊息；用來確認真的捲到頂了
+    （「好」「OK」之類到處都有，不能當證據）。"""
+    seen = Counter(m.body.strip() for m in messages if m.kind == "text")
+    return [m.body for m in messages[:count] if m.kind == "text" and seen[m.body.strip()] == 1]
 
 
 def dump_offset(prev, cur):
@@ -44,12 +57,14 @@ def dump_offset(prev, cur):
 
 class Capture:
     def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=3, max_steps=5000,
-                 idle_wait=2.0, log=print):
+                 idle_wait=2.0, oldest=(), give_up=8, log=print):
         self.device = device
         self.dir = os.path.join(workdir, "capture")
         self.drag = drag                    # 快速模式每步最多拖曳聊天區的多少比例
         self.duration_ms = duration_ms
         self.stop_after = stop_after
+        self.oldest = [t for t in oldest if t.strip()]   # txt 最前面幾則文字訊息，用來確認真的到頂
+        self.give_up = give_up              # 最舊的訊息還沒出現時，最多連續幾步捲不動就先停下
         self.max_steps = max_steps
         self.idle_wait = idle_wait
         self.log = log
@@ -92,7 +107,15 @@ class Capture:
             f.write(json.dumps({"step": step, **record}, ensure_ascii=False) + "\n")
 
     def done(self):
-        return any(s.get("done") for s in self.load_steps())
+        steps = self.load_steps()
+        return bool(steps) and bool(steps[-1].get("done"))
+
+    def at_oldest(self, screen):
+        """畫面上有 txt 最前面的訊息嗎？沒有 txt 可以對照時一律當作是。"""
+        if not self.oldest:
+            return True
+        texts = [r.text for r in screen.rows if r.kind == "text" and r.text]
+        return any(text_similarity(t, r) >= 0.9 for t in self.oldest for r in texts)
 
     # ---- 手機 ----
     def _grab(self, roi=None):
@@ -169,9 +192,8 @@ class Capture:
     # ---- 主流程 ----
     def run(self):
         steps = self.load_steps()
-        if any(s.get("done") for s in steps):
-            self.log("這個聊天室已經擷取完成。要重新擷取，請刪除 capture 目錄。")
-            return steps
+        if steps and steps[-1].get("done"):
+            self.log("上次已判定捲到最舊的訊息；再試著往上捲，確認真的到頂。要整個重新擷取，請刪除 capture 目錄。")
         width, height, _ = self.device.screen_size()
 
         if steps:
@@ -198,13 +220,14 @@ class Capture:
         top, bottom, _ = roi
         fast = getattr(self.device, "fast", False)
         scale_x, scale_y = width / img.shape[1], height / img.shape[0]
-        streak = 0
+        streak = 0                          # 連續捲不動的步數
         prev_img, prev_screen = img, screen
         t0, done_here = time.time(), 0
         while step < self.max_steps:
             distance = self._distance(prev_screen, roi) if fast else int((bottom - top) * min(self.drag, SLOW_DRAG))
             y1 = top + (bottom - top - distance) // 2
-            x, ya, yb = round(img.shape[1] / 2 * scale_x), round(y1 * scale_y), round((y1 + distance) * scale_y)
+            x = round(img.shape[1] * DRAG_X[streak % len(DRAG_X)] * scale_x)
+            ya, yb = round(y1 * scale_y), round((y1 + distance) * scale_y)
             if fast:
                 with self._timed("拖曳"):
                     self.device.drag(x, ya, yb)
@@ -222,7 +245,8 @@ class Capture:
             step += 1
             done_here += 1
             streak = streak + 1 if dy == 0 else 0
-            finished = streak >= self.stop_after
+            finished = streak >= self.stop_after and self.at_oldest(screen)
+            stuck = not finished and streak >= max(self.give_up, self.stop_after)
             with self._timed("存檔"):
                 self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": method, "done": finished})
             per_step = (time.time() - t0) / done_here
@@ -233,15 +257,25 @@ class Capture:
             if dy is None:
                 self.log("    警告：這一步的位移無法判定，可能漏掉中間的訊息。")
             if finished:
-                self.log(f"連續 {streak} 步沒有移動，已到最舊的訊息。擷取完成。")
+                self.log(f"連續 {streak} 步沒有移動，畫面上已是最舊的訊息。擷取完成。")
+                break
+            if stuck:
+                self.log(f"連續 {streak} 步捲不動，但 txt 最前面的訊息（例如「{self.oldest[0][:20]}」）還沒出現。"
+                         "請看一下手機畫面（是否跳出視窗、正在載入），處理好、不要捲動聊天室，再執行同一個指令接續。")
                 break
             if dy == 0:
-                time.sleep(self.idle_wait)     # 可能正在載入更舊的訊息，多等一下
+                # 可能正在載入更舊的訊息：逐次多等一點；下一次也換個位置拖（這裡的列可能攔住了觸控）
+                wait = min(self.idle_wait * 2 ** (streak - 1), MAX_WAIT)
+                self.log(f"    沒有移動：等 {wait:.0f} 秒後換個位置再拖")
+                time.sleep(wait)
             prev_img, prev_screen = img, screen
         if done_here:
             self.log(self.timing_summary(done_here))
             if self.overshoot:
                 self.log(f"捲過頭 {self.overshoot} 次（見上方警告）。")
+        status = getattr(self.device, "status", None)
+        if callable(status):
+            self.log(status())
         return self.load_steps()
 
     def timing_summary(self, steps):
