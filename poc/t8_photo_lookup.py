@@ -18,6 +18,7 @@ import glob
 import os
 import sys
 import time
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -93,12 +94,27 @@ def main():
         if xml is None:
             sys.exit(f"dump 失敗：{msg}")
         imwrite(out_path("t8_screen.png"), screen)
+        with open(out_path("t8_screen.xml"), "wb") as f:
+            f.write(xml)
 
     nodes = parse(xml)
     lists = [n["bounds"] for n in nodes if n["rid"] == "chathistory_message_list"]
     top, bottom = (lists[0][1], lists[0][3]) if lists else (0, screen.shape[0])
-    photos = [n["bounds"] for n in nodes if n["rid"] == "chat_ui_row_image"]
+    inside = [n for n in nodes if n["rid"] and top <= n["bounds"][1] < bottom]
+    # 單張照片是 chat_ui_row_image；一次傳多張的相簿格狀排列可能用別的 id，
+    # 所以也收描述含「照片」的圖片元件（頭像 chat_ui_row_thumbnail 除外）
+    photos = [n for n in inside if n["rid"] == "chat_ui_row_image"
+              or ("照片" in n["desc"] and n["cls"] == "ImageView" and n["rid"] != "chat_ui_row_thumbnail")]
     log(f"畫面上的照片：{len(photos)} 張")
+    for rid, count in Counter(n["rid"] for n in photos).items():
+        log(f"    {rid}：{count}")
+    if not photos:
+        log("沒有認出照片。以下是聊天區內所有元件 id 與描述（文字訊息的內容不列出），請把這段貼回來：")
+        text_ids = ("chat_ui_row_text_message", "chat_ui_message_text")
+        seen = Counter((n["rid"], "" if n["rid"] in text_ids else n["desc"][:20]) for n in inside)
+        for (rid, desc), count in seen.most_common(40):
+            log(f"    {count:3d}  {rid}  {desc!r}")
+    photos = [n["bounds"] for n in photos]
 
     total = time.time()
     for x1, y1, x2, y2 in photos:
