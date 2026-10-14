@@ -17,6 +17,7 @@ import http.client
 import json
 import os
 import time
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -46,10 +47,13 @@ class Rpc:
 
     def __init__(self, conn):
         self.conn, self.id = conn, 0
+        self.seconds = Counter()                        # 各方法累計秒數
+        self.count = Counter()
 
     def call(self, method, *params):
         self.id += 1                                    # 也是請求次數
         body = json.dumps({"jsonrpc": "2.0", "id": self.id, "method": method, "params": list(params)})
+        t = time.time()
         for attempt in (0, 1):
             try:
                 self.conn.request("POST", "/jsonrpc/0", body, self.HEADERS)
@@ -60,6 +64,8 @@ class Rpc:
                 self.conn.close()                       # 服務關掉了閒置的連線：重連再送一次
                 if attempt:
                     raise
+        self.seconds[method] += time.time() - t
+        self.count[method] += 1
         if "error" in data:
             raise DeviceError(f"{method} 失敗：{str(data['error'])[:300]}")
         return data.get("result")
@@ -68,6 +74,7 @@ class Rpc:
 class U2Device(Device):
     fast = True
     DOWN, UP, MOVE = 0, 1, 2            # MotionEvent 的動作
+    drag_moves = 3                      # 越過觸控誤差之後分幾段拖完
 
     def __init__(self, serial=None, reuse=True):
         try:
@@ -97,10 +104,12 @@ class U2Device(Device):
         return getattr(self.d.jsonrpc, method)(*params)
 
     def status(self):
-        """連線方式的摘要，印在擷取結束時，用來確認連線有沒有重複使用。"""
-        if self.rpc is not None:
-            return f"uiautomator2 連線：{self.rpc.id} 個請求用了 {self.rpc.conn.opened} 條連線"
-        return f"uiautomator2 連線：每個請求各開一條（{self.rpc_error[:200]}）"
+        """連線方式和各請求平均花多久，用來確認連線有沒有重複使用、時間花在哪。"""
+        if self.rpc is None:
+            return f"uiautomator2 連線：每個請求各開一條（{self.rpc_error[:200]}）"
+        rpc = self.rpc
+        each = "、".join(f"{m} {rpc.seconds[m] / rpc.count[m] * 1000:.0f}ms" for m in rpc.count)
+        return f"uiautomator2 連線：{rpc.id} 個請求用了 {rpc.conn.opened} 條連線；平均 {each}"
 
     def screencap(self):
         """回傳 (JPEG 位元組, 影像)。"""
@@ -131,12 +140,14 @@ class U2Device(Device):
             return xml.encode("utf-8")                    # 空的畫面：交給呼叫端判斷
         raise DeviceError(f"dump 失敗：{last}")
 
-    def drag(self, x, y1, y2, steps=3, hold=0.12):
+    def drag(self, x, y1, y2, steps=None, hold=0.12):
         """由 y1 拖到 y2 後停住再放開（放開時速度為零，不會慣性滑動）。
 
-        先小移一段越過觸控誤差範圍，再分三段拖完（實機驗證過的手勢）。不能一次跳到終點：
-        實機上這樣做，捲了一步之後就捲不動了。
+        先小移 40px：手指按在訊息上時，聊天列表要等移動超過觸控誤差才接手，而接手的那一下
+        移動不會捲動。所以先用小移讓列表接手，之後的移動才全部拿來捲。不先小移、一次跳到終點，
+        實機上就捲不動。之後分 drag_moves 段拖完（預設 3 段，實機驗證過）。
         """
+        steps = steps or self.drag_moves
         slop = 40 if y2 > y1 else -40
         self._call("injectInputEvent", self.DOWN, x, y1, 0)
         self._call("injectInputEvent", self.MOVE, x, y1 + slop, 0)

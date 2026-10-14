@@ -160,3 +160,24 @@ def test_false_done_without_txt_is_rechecked_on_the_next_run(tmp_path):
     assert steps[-1]["done"] and device.offset == 0
     screens, offsets = load(cap, steps)
     assert got(stitch(screens, offsets)[0]) == expected(items)
+
+
+def test_dump_offset_uses_the_uncut_edge_of_partial_rows():
+    from archiver.capture import dump_offset
+    from tests.xmlgen import hierarchy, text_row
+
+    LIST = (0, 278, 1080, 2143)
+    long_text = "這是一則很長很長的訊息"
+    # 上一步：長訊息完整；這一步往下捲了 1100px，它的下緣被切掉，畫面上沒有任何一列兩邊都完整
+    prev = parse_dump(hierarchy(LIST, [text_row(278, 900, "更早", "09:00", False),
+                                       text_row(950, 1700, long_text, "09:01", False),
+                                       text_row(1750, 2143, "OK", "09:02", True)]))
+    cur = parse_dump(hierarchy(LIST, [text_row(278, 1500, "上面新出現的", "08:59", False),
+                                      text_row(2050, 2143, long_text, "09:01", False)]))
+    assert not any(not r.partial for r in cur.rows if r.text == long_text)
+    assert dump_offset(prev, cur) == 1100
+
+    # 只有一則常見的短訊息對得上時，不能當證據
+    cur_ok = parse_dump(hierarchy(LIST, [text_row(278, 1500, "上面新出現的", "08:59", False),
+                                         text_row(1600, 2143, "OK", "09:02", True)]))
+    assert dump_offset(prev, cur_ok) is None

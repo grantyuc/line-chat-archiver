@@ -42,17 +42,41 @@ def oldest_texts(messages, count=15):
 
 
 def dump_offset(prev, cur):
-    """用前後兩次 dump 中都只出現一次的完整訊息列，估計位移。找不到時回傳 None。"""
-    def unique(screen):
+    """用前後兩次 dump 中都只出現一次的列，估計位移。找不到或互相矛盾時回傳 None。
+
+    兩邊都完整的列直接比上緣。捲得遠、重疊區小時，常常沒有一列在兩邊都完整，所以有文字的列
+    就算被切掉一邊，也比兩邊都沒被切到的那一緣（以文字辨認，因為被切掉時可能看不到時間）。
+    只靠一列時，那一列要夠有辨識度：兩邊都完整，或文字至少 6 個字。
+    """
+    def entries(screen):
+        top, bottom = screen.list_bounds[1], screen.list_bounds[3]
         seen = {}
         for r in screen.rows:
-            if not r.partial and r.kind != "unknown":
-                seen.setdefault(r.signature(), []).append(r)
-        return {sig: rows[0] for sig, rows in seen.items() if len(rows) == 1}
+            if r.kind == "unknown":
+                continue
+            cut_top, cut_bottom = r.bounds[1] <= top + 1, r.bounds[3] >= bottom - 1
+            if not cut_top and not cut_bottom:
+                seen.setdefault(("whole",) + r.signature(), []).append((r, False, False))
+            if r.text.strip():
+                seen.setdefault(("text", r.kind, r.side, r.text[:60]), []).append((r, cut_top, cut_bottom))
+        return {k: v[0] for k, v in seen.items() if len(v) == 1}
 
-    a, b = unique(prev), unique(cur)
-    diffs = [b[s].bounds[1] - a[s].bounds[1] for s in a.keys() & b.keys()]
-    return int(statistics.median(diffs)) if diffs else None
+    a, b = entries(prev), entries(cur)
+    found = []                                   # (位移, 是否夠有辨識度)
+    for key in a.keys() & b.keys():
+        (ra, top_a, bottom_a), (rb, top_b, bottom_b) = a[key], b[key]
+        strong = key[0] == "whole" or len(rb.text.strip()) >= 6
+        if not top_a and not top_b:
+            found.append((rb.bounds[1] - ra.bounds[1], strong))
+        elif not bottom_a and not bottom_b:
+            found.append((rb.bounds[3] - ra.bounds[3], strong))
+    if not found:
+        return None
+    middle = statistics.median(d for d, _ in found)
+    agree = [(d, strong) for d, strong in found if abs(d - middle) <= 6]
+    if len(agree) * 2 <= len(found) or (len(agree) == 1 and not agree[0][1]):
+        return None
+    return int(statistics.median(d for d, _ in agree))
 
 
 class Capture:
@@ -148,9 +172,11 @@ class Capture:
                     raise CaptureError("畫面上沒有 LINE 聊天室：請解鎖手機、打開要封存的聊天室後再執行，會從中斷處接續。")
                 found = self._offset(prev_img, prev_screen, img, screen, roi, expect)
                 dy_dump = dump_offset(prev_screen, screen)
-            if found[2] != "image" or dy_dump is None or abs(found[0] - dy_dump) <= 6:
+            if found[0] is not None and (found[2] != "image" or dy_dump is None or abs(found[0] - dy_dump) <= 6):
                 return png, img, xml, screen, found
-            time.sleep(0.2)
+            time.sleep(0.3)                    # 位移判定不了或兩者不一致：畫面可能還在變（載入圖片等），重拍
+        if found[0] is None or dy_dump is None:
+            return png, img, xml, screen, found
         # 畫面已經停了，兩者仍不一致：以 dump 中訊息的實際位置為準
         return png, img, xml, screen, (dy_dump, found[1], "dump")
 
@@ -254,6 +280,9 @@ class Capture:
                      f"畫面上 {len(screen.rows)} 列，平均每步 {per_step:.1f} 秒")
             if done_here % 20 == 0:
                 self.log("    " + self.timing_summary(done_here))
+                status = getattr(self.device, "status", None)
+                if callable(status):
+                    self.log("    " + status())
             if dy is None:
                 self.log("    警告：這一步的位移無法判定，可能漏掉中間的訊息。")
             if finished:
