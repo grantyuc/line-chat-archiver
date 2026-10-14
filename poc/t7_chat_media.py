@@ -7,7 +7,8 @@
 用法：
   python poc/t7_chat_media.py                # 在手機上查看結構，並與 poc/out/t6_media 比對
   python poc/t7_chat_media.py --pull 30      # 另外拉回最新的 30 個檔案，分析格式與尺寸
-  python poc/t7_chat_media.py --chat 目錄名   # 拉回該聊天室的快取，用特徵點比對測試 6 的照片
+  python poc/t7_chat_media.py --chat 目錄名   # 拉回該聊天室的快取，統計覆蓋情況並比對測試 6 的照片
+  python poc/t7_chat_media.py --chat 目錄名 --skip-match   # 只統計覆蓋情況（已拉回過就不會重拉）
 
 聊天室目錄名是 u/c/m 開頭的 33 碼 ID。找出測試聊天室的方法：請對方在測試聊天室傳一張
 「新」照片，在手機上點開看大圖，再執行 python poc/t7_chat_media.py --recent 10，
@@ -34,7 +35,9 @@ def quote(path):
 
 def list_files():
     """回傳 [(大小, 修改時間, 相對路徑)]。"""
-    out = shell(f"find {CHATS} -type f -exec stat -c '%s|%Y|%n' {{}} + 2>/dev/null", timeout=1800)
+    # 不用 find -exec ... {} +：檔案很多的目錄會整批失敗而被漏列，改用 xargs 每批固定 200 個
+    out = shell(f"find {CHATS} -type f 2>/dev/null | xargs -n 200 stat -c '%s|%Y|%n' 2>/dev/null",
+                timeout=1800)
     files = []
     for line in out.splitlines():
         parts = line.split("|", 2)
@@ -69,15 +72,49 @@ def variant(name):
     return "一般"
 
 
-def match_chat(log, chat):
-    """用特徵點比對測試 6 下載的每一張照片，找出它在這個聊天室快取中的版本。"""
+def coverage(log, local):
+    """統計這個聊天室的快取：每則訊息有哪些版本、是照片還是影片或語音。"""
+    kinds = defaultdict(set)       # 訊息 ID -> {檔案種類}
+    variants = defaultdict(set)    # 訊息 ID -> {縮圖, 一般, 原檔}
+    for dirpath, _, names in os.walk(local):
+        for name in names:
+            m = re.search(r"\d+", name)
+            if not m or name.endswith(("-hash", "-hmac")):
+                continue
+            mid = m.group(0)
+            if name.startswith("voice_"):
+                kinds[mid].add("語音")
+                continue
+            kind, _ = sniff(os.path.join(dirpath, name))
+            kinds[mid].add(kind)
+            variants[mid].add(variant(name))
+    counts = Counter()
+    for mid, ks in kinds.items():
+        if "語音" in ks:
+            counts["語音"] += 1
+        elif "MP4" in ks:
+            counts["影片"] += 1
+        elif ks & {"JPEG", "PNG", "WEBP", "GIF", "APNG"}:
+            v = variants[mid]
+            counts["照片：有原檔" if "原檔" in v else "照片：有一般版" if "一般" in v else "照片：只有縮圖"] += 1
+        else:
+            counts["其他：" + "/".join(sorted(ks))] += 1
+    ids = sorted(int(m) for m in kinds)
+    log(f"\n== 快取覆蓋情況（共 {len(kinds)} 則訊息，編號 {ids[0] if ids else '-'}～{ids[-1] if ids else '-'}）==")
+    for key, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        log(f"    {key}：{n}")
+    photos = sum(n for k, n in counts.items() if k.startswith("照片"))
+    big = counts["照片：有原檔"] + counts["照片：有一般版"]
+    if photos:
+        log(f"有大圖（一般版或原檔）的照片比例：{big / photos:.0%}")
+
+
+def match_chat(log, chat, do_match=True):
+    """拉回聊天室快取，統計覆蓋情況，再用特徵點比對測試 6 下載的每一張照片。"""
     from PIL import Image
 
     from imgmatch import SAME_PHOTO, features, score, similarity
 
-    if not os.path.isdir(T6_DIR):
-        log("\n（找不到 poc/out/t6_media，無法比對）")
-        return
     local = os.path.join(LOCAL_DIR, chat)
     if not os.path.isdir(local):
         log(f"\n$ adb pull {CHATS}/{chat}")
@@ -85,6 +122,12 @@ def match_chat(log, chat):
         log("    " + (out[-1] if out else ""))
     if not os.path.isdir(local):
         log("拉取失敗：請確認目錄名稱正確（見「最近有新檔案的聊天室目錄」）。")
+        return
+    coverage(log, local)
+    if not do_match:
+        return
+    if not os.path.isdir(T6_DIR):
+        log("\n（找不到 poc/out/t6_media，略過照片比對）")
         return
 
     cache = []                     # (訊息 ID, 路徑, 特徵)
@@ -197,6 +240,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pull", type=int, default=0, metavar="N", help="拉回最新的 N 個檔案分析格式")
     ap.add_argument("--chat", metavar="目錄名", help="拉回這個聊天室的快取，與測試 6 的照片做特徵點比對")
+    ap.add_argument("--skip-match", action="store_true", help="搭配 --chat：只統計快取覆蓋情況，不比對照片")
     ap.add_argument("--recent", type=int, default=60, metavar="分鐘",
                     help="列出最近幾分鐘內有變動的檔案（預設 60）")
     args = ap.parse_args()
@@ -275,7 +319,7 @@ def main():
     if args.pull:
         pull_samples(log, chat_files, args.pull)
     if args.chat:
-        match_chat(log, args.chat)
+        match_chat(log, args.chat, do_match=not args.skip_match)
     log.done()
 
 

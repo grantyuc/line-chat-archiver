@@ -64,6 +64,10 @@ def sniff(path):
         return "JPEG", head
     if head[:2] == b"PK":
         return "ZIP", head
+    if head[4:8] == b"ftyp":
+        return "MP4", head
+    if head[0] == 0xFF and head[1] & 0xF6 == 0xF0:
+        return "AAC", head
     if head.lstrip()[:1] in (b"{", b"["):
         return "JSON?", head
     return "未知", head
