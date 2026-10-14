@@ -8,7 +8,7 @@
   python poc/t5_swipe.py --mode hold              # 實驗：放開前先停住，試著消除慣性
 
 手指由上往下拖，畫面往較舊的訊息捲。過程中不要碰手機，按 Ctrl+C 可提前結束。
-每步截圖與逐步數據（steps.csv）存在 poc/out/t5_<模式>_<毫秒>ms_<比例>/。
+每步截圖與逐步數據（steps.csv）存在 poc/out/t5_<模式>_<毫秒>ms_<比例>_<開始時間>/。
 """
 import argparse
 import csv
@@ -164,7 +164,8 @@ def main():
     ap.add_argument("--timeout", type=float, default=8, help="每步最多等幾秒讓畫面停穩（預設 8）")
     args = ap.parse_args()
 
-    tag = f"t5_{args.mode}_{args.dur}ms_{round(args.dist * 100)}"
+    # 加上開始時間，同樣參數重跑時不會覆蓋上一次的結果
+    tag = f"t5_{args.mode}_{args.dur}ms_{round(args.dist * 100)}_{time.strftime('%H%M%S')}"
     log = Report(tag)
     ww, wh, dpi = screen_size()
     first = grab()
