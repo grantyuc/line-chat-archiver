@@ -208,7 +208,8 @@ class StickerLibrary:
         ids = sorted(self.entries)
         if os.path.exists(index_file):
             data = np.load(index_file)
-            if data["ids"].tolist() == ids and int(data["version"]) == 3:
+            # 舊版的索引沒有 version 欄位，或格式不同：重建
+            if "version" in data.files and int(data["version"]) == 3 and data["ids"].tolist() == ids:
                 self._set(ids, data)
                 self.log(f"貼圖索引：{len(ids)} 張（{len(self.owner)} 個影格）")
                 return

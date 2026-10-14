@@ -98,3 +98,18 @@ def test_sticker_cache_pulled_into_missing_dir_and_misplaced_packs_adopted(tmp_p
     lib2 = StickerLibrary(NoPull(), str(old), log=lambda *a: None)
     assert set(lib2.entries) == set(lib.entries)
     assert not any(d.isdigit() for d in os.listdir(old))
+
+
+def test_old_sticker_index_is_rebuilt(tmp_path):
+    import numpy as np
+
+    from archiver.media import StickerLibrary
+
+    device = FakeChat(make_chat(days=1, per_day=10, seed=2)[1])
+    cache = tmp_path / "cache"
+    StickerLibrary(device, str(cache), log=lambda *a: None)
+    # 換成舊版格式的索引（沒有 version 欄位）
+    np.savez(cache / "sticker_index.npz", ids=np.array(["1"]), bgr=np.zeros((1, 2)), alpha=np.zeros((1, 2)))
+    lib = StickerLibrary(device, str(cache), log=lambda *a: None)
+    assert len(lib.owner) >= 40
+    assert "version" in np.load(cache / "sticker_index.npz").files
