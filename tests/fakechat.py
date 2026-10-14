@@ -128,14 +128,21 @@ class FakeChat:
         prefix = remote_dir.rstrip("/") + "/"
         return [(len(data), path[len(prefix):]) for path, data in self.files.items() if path.startswith(prefix)]
 
-    def pull(self, remote, local_dir):
+    def pull(self, remote, local):
+        """和真的 adb pull 一樣：拉目錄時，本機目標不存在就直接當成該目錄，存在則在裡面再建一層。"""
         if remote in self.files:
-            self._write(os.path.join(local_dir, os.path.basename(remote)), self.files[remote])
+            target = os.path.join(local, os.path.basename(remote)) if os.path.isdir(local) else local
+            self._write(target, self.files[remote])
             return
-        parent = os.path.dirname(remote.rstrip("/"))
+        remote = remote.rstrip("/")
+        base = os.path.join(local, os.path.basename(remote)) if os.path.isdir(local) else local
         for path, data in self.files.items():
-            if path.startswith(remote.rstrip("/") + "/"):
-                self._write(os.path.join(local_dir, path[len(parent) + 1:]), data)
+            if path.startswith(remote + "/"):
+                self._write(os.path.join(base, path[len(remote) + 1:]), data)
+
+    def pull_dir(self, remote_dir, target):
+        from archiver.device import Device
+        Device.pull_dir(self, remote_dir, target)
 
     def pull_many(self, remotes, local_dir):
         for remote in remotes:

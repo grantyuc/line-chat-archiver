@@ -9,6 +9,7 @@ from archiver.screen import parse_dump
 from archiver.stitch import stitch
 from archiver.txt_parser import parse
 from tests.chatgen import make_chat
+from archiver.media import STICKERS as STICKERS_DIR
 from tests.fakechat import CHAT_ID, FakeChat
 
 
@@ -72,3 +73,28 @@ def test_album_row_is_shared_by_consecutive_photo_messages():
     single = NS(row=NS(media=[(0, 0, 1, 1)]))
     pairs = [(0, 5.0), (None, 0), (None, 0), (1, 5.0)]
     assert expand_albums(msgs, [album, single], pairs) == [(0, 0), (0, 1), (0, 2), (1, 0)]
+
+
+def test_sticker_cache_pulled_into_missing_dir_and_misplaced_packs_adopted(tmp_path):
+    from archiver.media import StickerLibrary
+
+    device = FakeChat(make_chat(days=1, per_day=10, seed=2)[1])
+    fresh = tmp_path / "fresh" / "cache"            # 上層目錄也不存在
+    lib = StickerLibrary(device, str(fresh), log=lambda *a: None)
+    assert len(lib.entries) >= 40 and (fresh / "stickers" / "2000").is_dir()
+
+    # 舊版留下的配置：貼圖組目錄直接在 cache 底下。應該直接搬，不再拉。
+    old = tmp_path / "old" / "cache"
+    old.mkdir(parents=True)
+    device.pull(STICKERS_DIR, str(old / "x"))
+    for pack in os.listdir(old / "x"):
+        os.replace(old / "x" / pack, old / pack)
+    os.rmdir(old / "x")
+
+    class NoPull:
+        def pull_dir(self, *a):
+            raise AssertionError("不應該重新拉")
+
+    lib2 = StickerLibrary(NoPull(), str(old), log=lambda *a: None)
+    assert set(lib2.entries) == set(lib.entries)
+    assert not any(d.isdigit() for d in os.listdir(old))

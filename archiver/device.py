@@ -2,7 +2,9 @@
 
 多台裝置同時連線時，先設定環境變數 ANDROID_SERIAL=<序號>。
 """
+import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -80,6 +82,24 @@ class Device:
         r = self._run(["pull", remote, local_dir], timeout)
         if r.returncode != 0:
             raise DeviceError(f"adb pull {remote} 失敗：" + (r.stderr or r.stdout).decode("utf-8", "replace")[:300])
+
+    def pull_dir(self, remote_dir, target):
+        """把手機上的目錄拉成本機的 target（內容直接放在 target 底下）。
+
+        adb pull 拉目錄時，本機目標不存在就直接當成該目錄、存在則在裡面再建一層，
+        所以先拉到一個一定不存在的暫存目錄，再搬成 target；拉到一半中斷也不會被當成完成。
+        """
+        partial = target.rstrip("/\\") + ".partial"
+        if os.path.exists(partial):
+            shutil.rmtree(partial)
+        os.makedirs(os.path.dirname(os.path.abspath(partial)), exist_ok=True)
+        self.pull(remote_dir, partial)
+        os.makedirs(partial, exist_ok=True)          # 手機上的目錄是空的時，adb 不會建立它
+        nested = os.path.join(partial, os.path.basename(remote_dir.rstrip("/")))
+        source = nested if os.listdir(partial) == [os.path.basename(nested)] and os.path.isdir(nested) else partial
+        os.replace(source, target)
+        if os.path.exists(partial):
+            shutil.rmtree(partial)
 
     def pull_many(self, remotes, local_dir, batch=100):
         """一次拉多個檔案到同一個本機目錄。"""

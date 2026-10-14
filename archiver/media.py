@@ -156,8 +156,10 @@ class StickerLibrary:
         if refresh and os.path.isdir(self.root):
             shutil.rmtree(self.root)
         if not os.path.isdir(self.root):
+            self._adopt_misplaced(cache_dir)
+        if not os.path.isdir(self.root):
             log("拉回貼圖快取（約數百 MB，只需一次）……")
-            device.pull(STICKERS, cache_dir)
+            device.pull_dir(STICKERS, self.root)
         self.entries = {}           # 貼圖ID -> {"pkg", "static", "ani"}
         for pkg in sorted(os.listdir(self.root)):
             pkg_dir = os.path.join(self.root, pkg)
@@ -169,6 +171,18 @@ class StickerLibrary:
                     entry = self.entries.setdefault(m.group(1), {"pkg": pkg})
                     entry["ani" if m.group(2) else "static"] = os.path.join(pkg_dir, name)
         self._build_index(os.path.join(cache_dir, "sticker_index.npz"))
+
+    def _adopt_misplaced(self, cache_dir):
+        """舊版把貼圖組目錄（數字名稱）直接拉到 cache_dir 底下；搬進 stickers/，不必重拉。"""
+        if not os.path.isdir(cache_dir):
+            return
+        packs = [d for d in os.listdir(cache_dir) if d.isdigit() and os.path.isdir(os.path.join(cache_dir, d))]
+        if not packs:
+            return
+        os.makedirs(self.root)
+        for d in packs:
+            os.replace(os.path.join(cache_dir, d), os.path.join(self.root, d))
+        self.log(f"把先前拉回的 {len(packs)} 個貼圖組搬到 {self.root}")
 
     @staticmethod
     def _load_rgba(path):
