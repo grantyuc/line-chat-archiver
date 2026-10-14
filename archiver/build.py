@@ -7,7 +7,7 @@ from collections import Counter
 from .align import align, infer_me, summarize
 from .capture import Capture
 from .media import resolve
-from .render import render
+from .render import PAGE_MIN, render
 from .screen import parse_dump
 from .stitch import stitch
 from .txt_parser import Chat, set_me
@@ -41,7 +41,7 @@ def load_capture(workdir):
 def unsend_notices(rows, pairs, extra_rows):
     """txt 不含收回通知，但畫面上有（置中的「某某已收回訊息」）。回傳 [(列索引, 文字)]。"""
     return [(j, rows[j].text) for j in extra_rows
-            if rows[j].kind == "unknown" and rows[j].side == "center" and "收回" in rows[j].text]
+            if rows[j].kind in ("system", "unknown") and rows[j].side == "center" and "收回" in rows[j].text]
 
 
 def previous_message(pairs, row_index):
@@ -74,7 +74,8 @@ def media_summary(chat, media):
     return lines
 
 
-def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, log=print):
+def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, page_min=PAGE_MIN,
+          log=print):
     chat = load_chat(workdir)
     steps, screens = load_capture(workdir)
     report = [f"聊天室：{chat.title}，txt 共 {len(chat.messages)} 則訊息"]
@@ -125,7 +126,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         i = previous_message(pairs, j)
         if i is not None:
             after.setdefault(chat.messages[i].idx, []).append(text)
-    site = render(workdir, chat, media, notices=after, log=log)
+    site = render(workdir, chat, media, notices=after, page_min=page_min, log=log)
     with open(os.path.join(workdir, "report.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(report) + "\n")
     for line in report:

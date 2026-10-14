@@ -24,7 +24,7 @@ TIME_RE = re.compile(r"(上午|下午|午前|午後)?\s?(\d{1,2}):(\d{2})")
 
 @dataclass
 class Row:
-    kind: str                      # text/sticker/photo/video/date/unknown
+    kind: str                      # text/sticker/photo/video/call/date/system/unknown
     bounds: tuple                  # 整列在螢幕上的範圍 (x1, y1, x2, y2)
     text: str = ""                 # 訊息文字、日期條文字，或未知列的描述
     time: str = ""                 # HH:MM（24 小時制）
@@ -87,6 +87,8 @@ def _row(node, width, list_bounds):
         rid, b, desc, text = _rid(n), _bounds(n), n.get("content-desc", ""), n.get("text", "")
         if rid == "chat_ui_date_indicator_text":
             row.date_label = text
+        elif rid == "chat_ui_row_system_msg_text":
+            row.kind, row.text, row.side = "system", text, "center"      # 置中的系統訊息（例如收回訊息）
         elif rid == "chat_ui_message_text":
             row.kind, row.text = "text", text
         elif rid == "chat_ui_row_text_message" and content is None:

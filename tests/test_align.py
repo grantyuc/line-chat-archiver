@@ -56,3 +56,15 @@ def test_infer_me_for_group_chat():
     pairs = align(chat.messages, rows, use_side=False)
     set_me(chat, infer_me(chat.messages, rows, pairs))
     assert chat.me == "我"
+
+
+def test_unsend_notice_row_is_not_taken_by_a_file_message():
+    txt = "\r\n".join(["[LINE] 與威廷的聊天記錄", "儲存日期：2026/10/14 下午5:27", "",
+                       "2026/9/1（週二）", "10:00\t威廷\t早", "10:01\t威廷\t[檔案]", "10:02\t威廷\t晚", ""])
+    chat = parse(txt)
+    rows = [Row("text", (0, 0, 1, 1), text="早", time="10:00", side="other"),
+            Row("system", (0, 0, 1, 1), text="您已收回訊息", side="center"),
+            Row("unknown", (0, 0, 1, 1), text="報告.pdf", time="10:01", side="other"),
+            Row("text", (0, 0, 1, 1), text="晚", time="10:02", side="other")]
+    assert [j for j, _ in align(chat.messages, rows)] == [0, 2, 3]
+    assert summarize(chat.messages, rows, align(chat.messages, rows))["extra_rows"] == [1]

@@ -82,3 +82,17 @@ def test_real_carousel_and_call_rows():
     assert album_row_.kind == "photo" and album_row_.more_media
     assert album_row_.media == [(114, 540, 426, 852), (432, 540, 744, 852)]
     assert album_row_.sender == "威廷(Waiting)" and album_row_.side == "other" and album_row_.time == "12:32"
+
+
+def test_real_unsend_notice_row():
+    def notice(y):
+        return node("", bounds=(0, y, 1080, y + 96), children=[node("", "android.widget.LinearLayout", (0, y, 1080, y + 96), children=[
+            node("chat_ui_row_swipeable_framelayout", "android.view.ViewGroup", (0, y + 11, 1080, y + 85), children=[
+                node("chat_ui_row_clicktarget", "android.view.View", (0, y + 19, 1080, y + 77)),
+                node("chat_ui_row_contentview_container", "android.widget.FrameLayout", (0, y + 19, 1080, y + 77), children=[
+                    node("", "android.view.ViewGroup", (0, y + 19, 1080, y + 77), children=[
+                        node("chat_ui_row_system_msg_layout", "android.widget.LinearLayout", (436, y + 19, 644, y + 77), children=[
+                            node("chat_ui_row_system_msg_text", "android.widget.TextView", (453, y + 27, 627, y + 69),
+                                 text="您已收回訊息")])])])])])])
+    screen = parse_dump(hierarchy(LIST, [notice(791), notice(887)]))
+    assert [(r.kind, r.text, r.side) for r in screen.rows] == [("system", "您已收回訊息", "center")] * 2

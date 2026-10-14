@@ -1,7 +1,7 @@
 """模組 3：把擷取到的聊天列（由舊到新）對到 txt 的訊息（由舊到新）。
 
 用動態規劃做序列對齊，配對分數依據：
-- 類型：文字對文字、貼圖對貼圖、照片對照片、影片對影片；檔案、通話、位置等對「未知」列。
+- 類型：文字對文字、貼圖對貼圖、照片對照片、影片對影片；系統訊息對系統訊息；檔案、位置等對「未知」列。
 - 文字相似度（文字訊息）。
 - 時間：畫面上每則訊息都有時間，和 txt 相同加分、不同扣分。
 - 左右側：自己的訊息在右側。
@@ -59,6 +59,10 @@ def pair_score(msg, row, day, use_side=True):
         score = 3.0
     elif msg.kind == "call" and row.kind == "call":
         score = 3.0
+    elif row.kind == "system":
+        if msg.kind not in ("system", "unsend"):
+            return None
+        score = 6 * text_similarity(msg.body, row.text) - 2
     elif msg.kind in NON_BUBBLE:
         if row.kind == "unknown":
             score = 1.5

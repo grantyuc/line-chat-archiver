@@ -1,6 +1,7 @@
 """模組 5：輸出 LINE 風格的靜態網站。
 
-- 依月份分頁（YYYY-MM.html），避免單一頁面太大；首頁有月份清單和全文搜尋。
+- 依月份分頁（YYYY-MM.html），避免單一頁面太大；訊息少的月份和相鄰月份合併成一頁
+  （YYYY-MM_YYYY-MM.html）。首頁有分頁清單和全文搜尋。
 - 文字都是原生 DOM 文字，可以反白、Ctrl+F；跨月份的搜尋用首頁的搜尋框。
 - 搜尋資料存成 search-index.js 用 <script> 載入，直接用 file:// 開啟也能用。
 - 照片用縮圖顯示（loading="lazy"），點開看大圖。
@@ -18,6 +19,8 @@ URL_RE = re.compile(r"https?://[^\s<>\"']+")
 ICONS = {"file": "📄", "voice": "🎤", "contact": "👤", "location": "📍", "call": "📞", "other": "🎁",
          "album": "🖼", "note": "📝"}
 LABELS = {"photo": "照片", "video": "影片", "sticker": "貼圖"}
+PAGE_MIN = 300                      # 少於這麼多則的頁和相鄰的頁合併
+PAGE_RE = re.compile(r"\d{4}-\d{2}(_\d{4}-\d{2})?\.html")
 
 
 def linkify(text):
@@ -37,8 +40,34 @@ def weekday(date):
     return WEEK[datetime.date(y, m, d).weekday()]
 
 
-def page_name(month):
-    return f"{month}.html"
+def group_months(sizes, page_min=PAGE_MIN):
+    """把相鄰月份合併成頁。sizes 為 [(月份, 訊息數)]，依時間排序。
+    反覆把最小的頁和較小的相鄰頁合併，直到每頁至少 page_min 則或只剩一頁。
+    回傳 [[月份, …], …]。page_min=0 時每月一頁。"""
+    pages = [[month] for month, _ in sizes]
+    counts = [n for _, n in sizes]
+    while len(pages) > 1:
+        i = min(range(len(pages)), key=counts.__getitem__)
+        if counts[i] >= page_min:
+            break
+        if i == 0:
+            j = 1
+        elif i == len(pages) - 1:
+            j = i - 1
+        else:
+            j = i - 1 if counts[i - 1] <= counts[i + 1] else i + 1
+        a, b = min(i, j), max(i, j)
+        pages[a:b + 1] = [pages[a] + pages[b]]
+        counts[a:b + 1] = [counts[a] + counts[b]]
+    return pages
+
+
+def page_label(months):
+    return months[0] if len(months) == 1 else f"{months[0]}～{months[-1]}"
+
+
+def page_name(months):
+    return f"{months[0]}.html" if len(months) == 1 else f"{months[0]}_{months[-1]}.html"
 
 
 def _media_html(msg, items):
@@ -87,11 +116,15 @@ def _page(title, body, extra_head=""):
             f"</head><body>{body}<script src=\"assets/app.js\"></script></body></html>\n")
 
 
-def render(workdir, chat, media=None, notices=None, log=print):
+def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, log=print):
     """輸出到 <工作目錄>/site/。media 為 media.resolve 的結果（可為 None）；
-    notices 為 {訊息索引: [置中通知文字]}，插在該則訊息之後（例如收回通知）。"""
+    notices 為 {訊息索引: [置中通知文字]}，插在該則訊息之後（例如收回通知）；
+    page_min：訊息少於這麼多則的月份和相鄰月份合併成一頁（0 為每月一頁）。"""
     site = os.path.join(workdir, "site")
     os.makedirs(os.path.join(site, "assets"), exist_ok=True)
+    for name in os.listdir(site):                      # 上次輸出的分頁可能和這次分法不同
+        if PAGE_RE.fullmatch(name):
+            os.remove(os.path.join(site, name))
     for name in ("style.css", "app.js"):
         shutil.copyfile(os.path.join(TEMPLATES, name), os.path.join(site, "assets", name))
     media = media or {"media": {}, "avatars": {}}
@@ -102,10 +135,11 @@ def render(workdir, chat, media=None, notices=None, log=print):
     months = OrderedDict()
     for msg in chat.messages:
         months.setdefault(msg.date[:7], []).append(msg)
-    names = list(months)
+    groups = group_months([(m, len(v)) for m, v in months.items()], page_min)
+    pages = [(page_name(g), page_label(g), [msg for m in g for msg in months[m]]) for g in groups]
 
     search = []
-    for k, (month, msgs) in enumerate(months.items()):
+    for k, (name, label, msgs) in enumerate(pages):
         out, last_date, last_key = [], None, None
         for msg in msgs:
             if msg.date != last_date:
@@ -120,19 +154,19 @@ def render(workdir, chat, media=None, notices=None, log=print):
                 out.append(f'<div class="notice"><span>{html.escape(text)}</span></div>')
                 last_key = None
             if msg.kind == "text" or msg.kind in ICONS:
-                search.append([page_name(month), msg.idx, msg.date, msg.time, msg.sender, msg.body])
-        prev_link = f'<a href="{page_name(names[k - 1])}">‹ {names[k - 1]}</a>' if k > 0 else "<span></span>"
-        next_link = f'<a href="{page_name(names[k + 1])}">{names[k + 1]} ›</a>' if k + 1 < len(names) else "<span></span>"
-        body = (f'<header class="bar"><a href="index.html">☰ 目錄</a><h1>{html.escape(title)}　{month}</h1>'
+                search.append([name, msg.idx, msg.date, msg.time, msg.sender, msg.body])
+        prev_link = f'<a href="{pages[k - 1][0]}">‹ {pages[k - 1][1]}</a>' if k > 0 else "<span></span>"
+        next_link = f'<a href="{pages[k + 1][0]}">{pages[k + 1][1]} ›</a>' if k + 1 < len(pages) else "<span></span>"
+        body = (f'<header class="bar"><a href="index.html">☰ 目錄</a><h1>{html.escape(title)}　{label}</h1>'
                 f'<a href="index.html">🔍 搜尋</a></header>'
                 f'<main class="chat">{"".join(out)}</main><nav class="pager">{prev_link}{next_link}</nav>')
-        with open(os.path.join(site, page_name(month)), "w", encoding="utf-8") as f:
-            f.write(_page(f"{title} {month}", body))
+        with open(os.path.join(site, name), "w", encoding="utf-8") as f:
+            f.write(_page(f"{title} {label}", body))
 
     with open(os.path.join(site, "assets", "search-index.js"), "w", encoding="utf-8") as f:
         f.write("window.SEARCH_INDEX = " + json.dumps(search, ensure_ascii=False) + ";\n")
 
-    cards = "".join(f'<a href="{page_name(m)}">{m}<small>{len(v)} 則</small></a>' for m, v in months.items())
+    cards = "".join(f'<a href="{name}">{label}<small>{len(msgs)} 則</small></a>' for name, label, msgs in pages)
     first, last = (chat.messages[0].date, chat.messages[-1].date) if chat.messages else ("", "")
     body = (f'<header class="bar"><h1>{html.escape(title)}</h1></header><main>'
             f'<p class="summary">{first} ～ {last}，共 {len(chat.messages)} 則訊息</p>'
@@ -140,5 +174,5 @@ def render(workdir, chat, media=None, notices=None, log=print):
             f'<div id="results" class="results"></div><div class="months">{cards}</div></main>')
     with open(os.path.join(site, "index.html"), "w", encoding="utf-8") as f:
         f.write(_page(title, body, '<script src="assets/search-index.js"></script>'))
-    log(f"網站輸出到 {os.path.join(site, 'index.html')}（{len(months)} 個月份頁）")
+    log(f"網站輸出到 {os.path.join(site, 'index.html')}（{len(months)} 個月份，{len(pages)} 頁）")
     return site

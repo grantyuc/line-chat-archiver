@@ -18,6 +18,7 @@ from archiver.build import build, load_chat, save_chat
 from archiver.capture import Capture, CaptureError
 from archiver.device import Device, DeviceError
 from archiver.device_u2 import connect
+from archiver.render import PAGE_MIN
 from archiver.screen import parse_dump
 from archiver.txt_parser import parse_file
 
@@ -105,7 +106,7 @@ def cmd_build(args):
         save_chat(args.work, chat)
     device = None if args.offline else Device()
     site = build(args.work, device=device, chat_dir=args.chat_dir, stickers=not args.no_stickers,
-                 photos=not args.no_photos, refresh=args.refresh)
+                 photos=not args.no_photos, refresh=args.refresh, page_min=args.page_min)
     print(f"\n完成：用瀏覽器打開 {os.path.join(site, 'index.html')}")
 
 
@@ -137,8 +138,10 @@ def main():
         p.add_argument("--chat-dir", help="聊天室快取目錄 ID（u/c/m 開頭）；省略時自動用照片比對找出")
         p.add_argument("--no-stickers", action="store_true", help="貼圖直接用截圖，不比對貼圖快取")
         p.add_argument("--no-photos", action="store_true", help="照片直接用截圖，不比對聊天快取")
-        p.add_argument("--offline", action="store_true", help="不連手機，只用已下載的快取")
+        p.add_argument("--offline", action="store_true", help="不連手機：貼圖和照片都用截圖裁切")
         p.add_argument("--refresh", action="store_true", help="重新列出、下載手機上的快取")
+        p.add_argument("--page-min", type=int, default=PAGE_MIN,
+                       help=f"訊息少於這麼多則的月份和相鄰月份合併成一頁（預設 {PAGE_MIN}；0 為每月一頁）")
 
     p = sub.add_parser("parse", help="解析 txt")
     common(p, txt=True)
