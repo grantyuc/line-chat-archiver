@@ -1,3 +1,5 @@
+import os
+
 from archiver.capture import Capture
 from archiver.screen import parse_dump
 from archiver.stitch import stitch
@@ -77,7 +79,28 @@ def test_fast_mode_drag_without_fling(tmp_path):
     uniques, warnings = stitch(screens, offsets)
     assert warnings == []
     assert got(uniques) == expected(items)
-    # 拖曳一半聊天區、沒有慣性：每步位移固定
+    assert all(not u.row.partial for u in uniques)
+    assert all(s["method"] in ("start", "image") for s in steps)
+    # 每步捲的距離依畫面而定，平均遠多於半個聊天區
     moving = [s["dy"] for s in steps[1:] if s["dy"]][:-1]     # 最後一次碰到頂端，只捲一部分
-    assert max(moving) - min(moving) <= 4
-    assert min(moving) >= int((2143 - 278) * 0.5) - 4
+    view = 2143 - 278
+    assert max(moving) <= int(view * 0.75) + 4
+    assert sum(moving) / len(moving) >= view * 0.6
+    assert cap.overshoot == 0 and set(cap.timing) >= {"拖曳", "dump", "截圖", "比對", "存檔"}
+    assert os.path.exists(cap.image_path(0)) and cap.image_path(0).endswith(".jpg")
+
+
+def test_fast_mode_shows_every_tall_photo_whole(tmp_path):
+    _, items = make_chat(days=3, seed=9)
+    photos = [it for it in items if it["kind"] == "photo"]
+    assert len(photos) >= 4
+    for k, it in enumerate(photos):
+        it["height"] = (1500, 1200, 900, 700)[k % 4]            # 最高的占聊天區八成
+    device = FakeChat(items, fast=True)
+    cap, steps = run_capture(tmp_path, device)
+    screens, offsets = load(cap, steps)
+    uniques, warnings = stitch(screens, offsets)
+    assert warnings == [] and got(uniques) == expected(items)
+    tall = [u for u in uniques if u.row.kind == "photo"]
+    assert len(tall) == len(photos)
+    assert all(not u.row.partial and u.row.bounds[1] >= 278 + 126 for u in tall)   # 也不在浮動日期條底下

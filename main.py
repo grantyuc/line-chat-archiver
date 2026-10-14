@@ -127,10 +127,11 @@ def main():
         p.add_argument("--me", help="自己的顯示名稱（群組聊天用；一對一會自動判斷）")
 
     def capture_opts(p):
-        p.add_argument("--drag", type=float, default=0.5,
-                       help="每步拖曳聊天區高度的比例（預設 0.5；太大時高的照片可能沒有一張截圖拍得完整）")
+        p.add_argument("--drag", type=float, default=0.75,
+                       help="uiautomator2 模式每步最多拖曳聊天區高度的多少（預設 0.75；實際距離依畫面調整，"
+                            "確保每一列都完整出現過）。adb 模式固定 0.5")
         p.add_argument("--backend", choices=("auto", "u2", "adb"), default="auto",
-                       help="auto：有裝 uiautomator2 就用（每步約 2 秒），否則用 adb（約 6 秒）")
+                       help="auto：有裝 uiautomator2 就用（快速模式），否則用 adb（約 6 秒一步）")
         p.add_argument("--duration", type=int, default=1000, help="每次滑動的毫秒數（預設 1000）")
         p.add_argument("--max-steps", type=int, default=5000, help="最多捲幾步（預設 5000）")
 

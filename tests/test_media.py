@@ -202,3 +202,29 @@ def test_media_summary_lists_screenshot_fallbacks():
     assert "photo 2026-01-30 13:58 威廷：site/media/crops/1_0.png" in text
     assert "1234（thumb/plain）0.41" in text
     assert "sticker 2026-02-01 09:00 我：site/media/crops/2_0.png" in text
+
+
+def test_stale_cache_listing_is_refreshed_for_missed_photos(tmp_path):
+    txt, items = make_chat(days=3, per_day=25, seed=11)
+    chat = parse(txt)
+    device = FakeChat(items)
+    photos = [it for it in device.items if it["kind"] == "photo"]
+    late = photos[len(photos) // 2]
+    folder = f"{CHATS}/{CHAT_ID}/messages/{late['number']}"
+    saved = {k: device.files.pop(k) for k in list(device.files) if k.startswith(folder)}
+    work = tmp_path / "work"
+    cap = Capture(device, str(work), idle_wait=0, log=lambda *a: None)
+    steps = cap.run()
+    screens = []
+    for s in steps:
+        with open(cap.path(s["step"], "xml"), "rb") as f:
+            screens.append(parse_dump(f.read()))
+    uniques, _ = stitch(screens, [s["dy"] for s in steps])
+    pairs = align(chat.messages, [u.row for u in uniques])
+    msg = [m for m, it in zip(chat.messages, [i for i in device.items if i["kind"] != "date"]) if it is late][0]
+
+    first = resolve(str(work), chat, uniques, pairs, device=device, chat_dir=CHAT_ID, log=lambda *a: None)
+    assert first["media"][str(msg.idx)][0]["source"] == "screenshot"
+    device.files.update(saved)                 # 之後 LINE 才把這張下載到快取；本機的快取清單已經過時
+    data = resolve(str(work), chat, uniques, pairs, device=device, chat_dir=CHAT_ID, log=lambda *a: None)
+    assert data["media"][str(msg.idx)][0]["number"] == late["number"]

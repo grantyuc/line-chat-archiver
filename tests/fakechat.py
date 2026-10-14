@@ -94,6 +94,7 @@ class FakeChat:
                 height = 312
             else:
                 height = 500
+            height = it.get("height", height)
             show_avatar = it["kind"] != "date" and not it.get("self") and not prev_other
             it["avatar"] = show_avatar
             prev_other = it["kind"] != "date" and not it.get("self")
@@ -207,7 +208,11 @@ class FakeChat:
         self.offset = max(0, self.offset - (y2 - y1))
 
     def screencap(self):
+        """一般模式和 adb 一樣傳回 PNG；快速模式和 uiautomator2 一樣傳回 JPEG。"""
         img = self.render()
+        if self.fast:
+            data = jpg(img, 80)
+            return data, cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         return cv2.imencode(".png", img)[1].tobytes(), img
 
     def dump(self):

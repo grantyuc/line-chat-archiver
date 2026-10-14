@@ -16,6 +16,7 @@ TOLERANCE = 40      # 同一列在相鄰兩步之間，位置可以差多少像�
 class Unique:
     row: object                 # 最佳觀察（盡量是完整出現的那一次）
     frame: int                  # 最佳觀察在哪一步
+    room: float = 0             # 最佳觀察離聊天區上下緣的距離
     gy1: float = None           # 上緣（整段對話座標）；被裁掉時為 None
     gy2: float = None
     frames: list = field(default_factory=list)
@@ -38,11 +39,16 @@ def compatible(a, b):
     return True
 
 
-def better(new, old):
-    """new 這次觀察比 old 好嗎？完整出現 > 部分；同樣完整時取資訊較多者。"""
+def better(new, old, new_room=0, old_room=0):
+    """new 這次觀察比 old 好嗎？完整出現 > 部分；同樣完整時取資訊較多者，
+    再取離聊天區上下緣較遠者（頂端有浮動日期條、公告，底端有按鈕，可能蓋住一部分）。"""
     if old.partial != new.partial:
         return old.partial
-    return (old.kind == "unknown" and new.kind != "unknown") or (not old.time and bool(new.time))
+    if (old.kind == "unknown") != (new.kind == "unknown"):
+        return old.kind == "unknown"
+    if bool(old.time) != bool(new.time):
+        return not old.time
+    return new_room > old_room
 
 
 def stitch(screens, offsets):
@@ -77,12 +83,13 @@ def stitch(screens, offsets):
                     gaps.append(abs(gy2 - u.gy2))
                 if gaps and min(gaps) < best_gap:
                     match, best_gap = u, min(gaps)
+            room = min(row.bounds[1] - top, bottom - row.bounds[3])
             if match is None:
-                match = Unique(row, k, gy1, gy2)
+                match = Unique(row, k, room, gy1, gy2)
                 uniques.append(match)
             else:
-                if better(row, match.row):
-                    match.row, match.frame = row, k
+                if better(row, match.row, room, match.room):
+                    match.row, match.frame, match.room = row, k, room
                 if match.gy1 is None and gy1 is not None:
                     match.gy1 = gy1
                 if match.gy2 is None and gy2 is not None:

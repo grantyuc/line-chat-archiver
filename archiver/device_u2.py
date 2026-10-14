@@ -1,16 +1,19 @@
-"""用 uiautomator2 操作手機，讓每一步擷取從約 6 秒降到 2 秒左右。
+"""用 uiautomator2 操作手機，讓每一步擷取從約 6 秒降到 1 秒左右。
 
 內建的 `uiautomator dump` 每次都要重新啟動，一次 3～4 秒；uiautomator2 在手機上常駐一個
 服務，dump 和截圖都快得多。滑動也改成「拖曳到底、停住、再放開」，放開時速度為零，
-畫面不會再慣性滑動，不必等它停下。
+畫面不會再慣性滑動，不必等它停下。截圖直接存服務傳回的 JPEG，不再轉成 PNG
+（省下編碼時間，檔案也小很多）。
 
 第一次連線時，uiautomator2 會在手機上安裝它的服務 App（ATX）。擷取結束後會停止服務，
 以免和內建的 uiautomator（實機測試腳本用的）互搶。
 """
+import base64
 import os
 import time
 
 import cv2
+import numpy as np
 
 from .device import Device, DeviceError
 
@@ -30,13 +33,19 @@ class U2Device(Device):
             raise DeviceError(f"uiautomator2 連線失敗：{e}")
 
     def screencap(self):
+        """回傳 (JPEG 位元組, 影像)。"""
         try:
-            img = self.d.screenshot(format="opencv")
+            data = self.d.jsonrpc.takeScreenshot(1, 80)
+            raw = base64.b64decode(data) if data else b""
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
+            if img is None:                               # 服務沒有傳回截圖時，改用一般介面
+                img = self.d.screenshot(format="opencv")
+                raw = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes()
         except Exception as e:
             raise DeviceError(f"截圖失敗：{e}")
         if img is None:
             raise DeviceError("截圖失敗")
-        return cv2.imencode(".png", img)[1].tobytes(), img
+        return raw, img
 
     def dump(self, retries=3):
         last = None
@@ -50,15 +59,15 @@ class U2Device(Device):
             time.sleep(0.3)
         raise DeviceError(f"dump 失敗：{last}")
 
-    def drag(self, x, y1, y2, steps=8, hold=0.12):
-        """由 y1 拖到 y2 後停住再放開。第一小段只用來越過觸控誤差範圍，不會造成捲動。"""
+    def drag(self, x, y1, y2, steps=3, hold=0.12):
+        """由 y1 拖到 y2 後停住再放開（放開時速度為零，不會慣性滑動）。
+        第一小段只用來越過觸控誤差範圍。每個觸控事件都是一次連線，所以中間只送幾個點。"""
         touch = self.d.touch
         touch.down(x, y1)
         slop = 40 if y2 > y1 else -40
         touch.move(x, y1 + slop)
         for k in range(1, steps + 1):
             touch.move(x, y1 + slop + (y2 - y1) * k // steps)
-            time.sleep(0.012)
         time.sleep(hold)
         touch.up(x, y2 + slop)
 

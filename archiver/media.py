@@ -20,6 +20,7 @@ from collections import Counter
 import cv2
 import numpy as np
 
+from .capture import image_path
 from .imgio import imread, imwrite, sniff
 from .imgmatch import SAME_PHOTO, features, score, similarity
 
@@ -60,25 +61,44 @@ class PhotoLibrary:
         os.makedirs(self.thumb_dir, exist_ok=True)
         os.makedirs(self.full_dir, exist_ok=True)
         self.index_file = os.path.join(cache_dir, "thumb_index.npz")
-        listing_file = os.path.join(cache_dir, "chats_listing.json")
-        if os.path.exists(listing_file) and not refresh:
-            with open(listing_file, encoding="utf-8") as f:
-                listing = json.load(f)
+        self.listing_file = os.path.join(cache_dir, "chats_listing.json")
+        if os.path.exists(self.listing_file) and not refresh:
+            with open(self.listing_file, encoding="utf-8") as f:
+                self.listing = json.load(f)
         else:
             log("列出手機上的聊天媒體快取（檔案多時要幾分鐘）……")
-            listing = device.list_files(CHATS)
-            with open(listing_file, "w", encoding="utf-8") as f:
-                json.dump(listing, f)
+            self.listing = device.list_files(CHATS)
+            self._save_listing()
+        self._parse_listing()
+        self.chat_dir = chat_dir
+        self.names, self.sigs = np.array([]), np.zeros((0, SIG * SIG), np.float32)
+
+    def _save_listing(self):
+        with open(self.listing_file, "w", encoding="utf-8") as f:
+            json.dump(self.listing, f)
+
+    def _parse_listing(self):
         self.entries = {}            # 編號 -> {"dir": 聊天室ID, "thumb"/"plain"/"original": (相對路徑, 大小)}
-        for size, rel in listing:
+        for size, rel in self.listing:
             parts = rel.split("/")
             m = re.fullmatch(r"(\d+)(\.thumb|\.original)?", parts[-1]) if len(parts) == 3 else None
             if not m or parts[1] != "messages":
                 continue
             entry = self.entries.setdefault(m.group(1), {"dir": parts[0]})
             entry[{".thumb": "thumb", ".original": "original", None: "plain"}[m.group(2)]] = (rel, size)
-        self.chat_dir = chat_dir
-        self.names, self.sigs = np.array([]), np.zeros((0, SIG * SIG), np.float32)
+
+    def refresh_chat(self, chat_dir):
+        """重新列出這個聊天室的快取，回傳多了幾個檔案。
+        快取清單是第一次執行時存下的；之後擷取畫面時，LINE 可能又下載了舊照片的縮圖。"""
+        old = {rel for _, rel in self.listing if rel.startswith(chat_dir + "/")}
+        fresh = [[size, f"{chat_dir}/{rel}"] for size, rel in self.device.list_files(f"{CHATS}/{chat_dir}")]
+        self.listing = [x for x in self.listing if not x[1].startswith(chat_dir + "/")] + fresh
+        self._save_listing()
+        self._parse_listing()
+        added = sum(1 for _, rel in fresh if rel not in old)
+        if added:
+            self.build_index({chat_dir})
+        return added
 
     def thumb_path(self, number):
         return os.path.join(self.thumb_dir, number + ".thumb")
@@ -376,7 +396,7 @@ class FrameCache:
         if step not in self.items:
             if len(self.items) >= self.size:
                 self.items.pop(next(iter(self.items)))
-            self.items[step] = imread(os.path.join(self.dir, f"{step:05d}.png"))
+            self.items[step] = imread(image_path(self.dir, step))
         return self.items[step]
 
 
@@ -507,11 +527,19 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
                 missed.append((pos, image))
         result.setdefault(msg.idx, []).append(item)
 
-    # 縮圖索引找不到的：在前後已對到的編號之間逐一比對（也涵蓋快取中沒有縮圖的訊息）
+    # 縮圖索引找不到的：先重新列出聊天室快取再找一次，再在前後已對到的編號之間逐一比對
+    # （也涵蓋快取中沒有縮圖、只有大圖的訊息）
+    added = photo_lib.refresh_chat(chat_dir) if missed else 0
+    if missed:
+        log(f"    {len(missed)} 張照片在縮圖索引中找不到；重新列出聊天室快取，多了 {added} 個檔案")
     for pos, image in missed:
-        after = next((numbers[p] for p in range(pos - 1, -1, -1) if p in numbers), None)
-        before = next((numbers[p] for p in range(pos + 1, len(slots)) if p in numbers), None)
-        number, tried = photo_lib.match_nearby(image, chat_dir, after, before, set(numbers.values()))
+        hit = photo_lib.lookup(image) if added else None
+        if hit:
+            number, tried = hit[0], []
+        else:
+            after = next((numbers[p] for p in range(pos - 1, -1, -1) if p in numbers), None)
+            before = next((numbers[p] for p in range(pos + 1, len(slots)) if p in numbers), None)
+            number, tried = photo_lib.match_nearby(image, chat_dir, after, before, set(numbers.values()))
         items = result[chat.messages[pos].idx]
         k = next(i for i, it in enumerate(items) if it["source"] == "screenshot")
         if number is None:
