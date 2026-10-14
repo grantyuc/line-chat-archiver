@@ -149,6 +149,8 @@ class PhotoLibrary:
 
 class StickerLibrary:
     SIZE = 32
+    ANI_FRAMES = 12         # 動態貼圖每張取幾格建索引
+    MAX_FRAMES = 60         # 驗證時最多比對幾格
 
     def __init__(self, device, cache_dir, refresh=False, log=print):
         self.log = log
@@ -185,97 +187,134 @@ class StickerLibrary:
         self.log(f"把先前拉回的 {len(packs)} 個貼圖組搬到 {self.root}")
 
     @staticmethod
-    def _load_rgba(path):
+    def _frames(path, limit):
+        """回傳 [(影格編號, BGRA 整張畫布)]。靜態 PNG 一格；APNG 平均取 limit 格。"""
         from PIL import Image
         try:
             with Image.open(path) as im:
-                im.seek(0)
-                rgba = np.array(im.convert("RGBA"))
+                count = getattr(im, "n_frames", 1)
+                n = min(count, limit)
+                picks = sorted({round(i * (count - 1) / max(1, n - 1)) for i in range(n)})
+                frames = []
+                for k in picks:
+                    im.seek(k)
+                    rgba = np.array(im.convert("RGBA"))
+                    frames.append((k, rgba[:, :, [2, 1, 0, 3]]))
+                return frames
         except Exception:
-            return None
-        alpha = rgba[:, :, 3]
-        ys, xs = np.nonzero(alpha > 16)
-        if not len(ys):
-            return None
-        rgba = rgba[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-        bgr = rgba[:, :, 2::-1].astype(np.float32) / 255
-        return bgr, rgba[:, :, 3:].astype(np.float32) / 255
+            return []
 
     def _build_index(self, index_file):
         ids = sorted(self.entries)
         if os.path.exists(index_file):
             data = np.load(index_file)
-            if data["ids"].tolist() == ids:
-                self.ids, self.bgr, self.alpha = ids, data["bgr"], data["alpha"]
-                self.log(f"貼圖索引：{len(ids)} 張")
+            if data["ids"].tolist() == ids and int(data["version"]) == 3:
+                self._set(ids, data)
+                self.log(f"貼圖索引：{len(ids)} 張（{len(self.owner)} 個影格）")
                 return
         self.log(f"建立貼圖索引：{len(ids)} 張……")
-        keep, bgrs, alphas = [], [], []
-        for sid in ids:
+        owner, paths, frame_no, aspect, gray, alpha = [], [], [], [], [], []
+        for n, sid in enumerate(ids):
             entry = self.entries[sid]
-            loaded = self._load_rgba(entry.get("static") or entry["ani"])
-            if loaded is None:
-                continue
-            bgr, alpha = loaded
-            keep.append(sid)
-            bgrs.append(cv2.resize(bgr, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA))
-            alphas.append(cv2.resize(alpha, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA)[:, :, None])
-        self.ids = keep
-        self.bgr = np.array(bgrs, np.float32).reshape(-1, self.SIZE, self.SIZE, 3)
-        self.alpha = np.array(alphas, np.float32).reshape(-1, self.SIZE, self.SIZE, 1)
-        np.savez(index_file, ids=np.array(keep), bgr=self.bgr, alpha=self.alpha)
+            for key, limit in (("static", 1), ("ani", self.ANI_FRAMES)):
+                if key not in entry:
+                    continue
+                for k, bgra in self._frames(entry[key], limit):
+                    if bgra[:, :, 3].max() < 16:
+                        continue
+                    g, core = self._small(bgra)
+                    owner.append(n)
+                    paths.append(entry[key])
+                    frame_no.append(k)
+                    aspect.append(bgra.shape[1] / bgra.shape[0])
+                    gray.append(g)
+                    alpha.append(core)
+        data = {"ids": np.array(ids), "owner": np.array(owner, np.int32), "paths": np.array(paths),
+                "frame_no": np.array(frame_no, np.int32), "aspect": np.array(aspect, np.float32),
+                "gray": np.array(gray, np.float32).reshape(-1, self.SIZE * self.SIZE),
+                "alpha": np.array(alpha, np.float32).reshape(-1, self.SIZE * self.SIZE), "version": 3}
+        np.savez(index_file, **data)
+        self._set(ids, data)
+
+    def _small(self, bgra):
+        """縮成 SIZE×SIZE：回傳 (灰階, 權重)。只用完全不透明的核心像素，邊緣的半透明像素
+        會混進背景色，在截圖和貼圖檔之間對不上。"""
+        a = bgra[:, :, 3].astype(np.float32) / 255
+        size = (self.SIZE, self.SIZE)
+        small_a = cv2.resize(a, size, interpolation=cv2.INTER_AREA)
+        premul = cv2.resize(bgra[:, :, :3].astype(np.float32) * a[:, :, None], size, interpolation=cv2.INTER_AREA)
+        color = np.clip(premul / np.maximum(small_a[:, :, None], 1e-3), 0, 255).astype(np.float32)
+        core = small_a > 0.9
+        if core.sum() < 20:
+            core = small_a > 0.5
+        return cv2.cvtColor(color, cv2.COLOR_BGR2GRAY).ravel(), core.astype(np.float32).ravel()
+
+    def _set(self, ids, data):
+        self.ids = ids
+        self.owner, self.paths, self.frame_no = data["owner"], data["paths"], data["frame_no"]
+        self.aspect, self.gray, self.alpha = data["aspect"], data["gray"], data["alpha"]
+        # 預先算好加權相關係數要用的量
+        weight = self.alpha / (self.alpha.sum(axis=1, keepdims=True) + 1e-6)
+        self.wg = weight * self.gray
+        self.weight = weight
+        self.mean_g = self.wg.sum(axis=1)
+        self.var_g = (self.wg * self.gray).sum(axis=1) - self.mean_g ** 2
 
     @staticmethod
-    def _content(image):
-        """回傳 (背景色 BGR 0～1, 去掉背景後的內容)。"""
-        border = np.concatenate([image[0], image[-1], image[:, 0], image[:, -1]])
-        bg = np.median(border, axis=0)
-        diff = np.abs(image.astype(np.int16) - bg.astype(np.int16)).max(axis=2)
-        ys, xs = np.nonzero(diff > 25)
-        if not len(ys):
-            return bg / 255, None
-        return bg / 255, image[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    def compare(candidate, alpha, target):
+        """只看貼圖不透明的像素，回傳 (相關係數, 平均色差)。
 
-    @staticmethod
-    def _ncc(a, b):
-        a = cv2.GaussianBlur(a, (5, 5), 0).astype(np.float32).ravel()
-        b = cv2.GaussianBlur(b, (5, 5), 0).astype(np.float32).ravel()
-        a -= a.mean()
-        b -= b.mean()
+        相關係數只看明暗變化像不像；色塊很平的貼圖換一張也可能很高，所以另外要求顏色本身接近。
+        """
+        mask = cv2.erode((alpha > 0.5).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        if mask.sum() < 50:
+            return 0.0, 255.0
+        a = cv2.GaussianBlur(candidate, (3, 3), 0)[mask].astype(np.float32)
+        b = cv2.GaussianBlur(target, (3, 3), 0)[mask].astype(np.float32)
+        mae = float(np.abs(a - b).mean())
+        a = a.mean(axis=1) - a.mean()
+        b = b.mean(axis=1) - b.mean()
         denom = float(np.sqrt((a * a).sum() * (b * b).sum()))
-        return float((a * b).sum() / denom) if denom else 0.0
+        return (float((a * b).sum() / denom) if denom else 0.0), mae
 
-    def lookup(self, image, candidates=5):
-        """回傳 (貼圖ID, 相關係數)；找不到時回傳 None。"""
-        if not self.ids or image.size == 0:
+    def lookup(self, image, candidates=24):
+        """回傳 (貼圖ID, 相關係數)；找不到時回傳 None。
+
+        LINE 把整張貼圖畫布（含透明邊）縮放到貼圖元件的範圍，所以把候選貼圖縮放到截圖大小，
+        只比對不透明的像素。背景有花紋、或截到動畫的其他影格，都不影響。
+        """
+        if not len(self.owner) or image.size == 0 or min(image.shape[:2]) < 16:
             return None
-        bg, content = self._content(image)
-        if content is None or min(content.shape[:2]) < 16:
+        h, w = image.shape[:2]
+        target = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        c = cv2.resize(target, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA).astype(np.float32).ravel()
+        ok = np.abs(np.log(self.aspect / (w / h))) < 0.06          # 畫布長寬比要相同
+        if not ok.any():
             return None
-        q = cv2.cvtColor(cv2.resize(content, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-        q = q.astype(np.float32).ravel()
-        q = (q - q.mean()) / (np.linalg.norm(q - q.mean()) or 1)
-        comp = self.bgr * self.alpha + bg.astype(np.float32) * (1 - self.alpha)
-        gray = (comp @ np.array([0.114, 0.587, 0.299], np.float32)).reshape(len(self.ids), -1) * 255
-        gray -= gray.mean(axis=1, keepdims=True)
-        gray /= np.linalg.norm(gray, axis=1, keepdims=True) + 1e-6
-        order = np.argsort(-(gray @ q))[:candidates]
-        h, w = content.shape[:2]
-        target = cv2.cvtColor(content, cv2.COLOR_BGR2GRAY)
-        for i in order:
-            sid = self.ids[i]
-            entry = self.entries[sid]
-            loaded = self._load_rgba(entry.get("static") or entry["ani"])
-            if loaded is None:
+        mean_c = self.weight[ok] @ c
+        cov = self.wg[ok] @ c - self.mean_g[ok] * mean_c
+        var_c = self.weight[ok] @ (c * c) - mean_c ** 2
+        coarse = cov / np.sqrt(np.maximum(var_c * self.var_g[ok], 1e-6))
+        index = np.nonzero(ok)[0]
+        tried, best = [], None            # best = (色差, 相關係數, 貼圖ID)
+        for i in index[np.argsort(-coarse)]:
+            sid = self.ids[self.owner[i]]
+            if sid in tried:
                 continue
-            bgr, alpha = loaded
-            bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_AREA)
-            alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_AREA)[:, :, None]
-            cand = ((bgr * alpha + bg * (1 - alpha)) * 255).astype(np.uint8)
-            ncc = self._ncc(cv2.cvtColor(cand, cv2.COLOR_BGR2GRAY), target)
-            if ncc >= 0.85:
-                return sid, ncc
-        return None
+            tried.append(sid)
+            # 粗篩只索引了部分影格；驗證時比對這張貼圖的每一格（截圖可能停在任何一格）
+            entry = self.entries[sid]
+            for key, limit in (("static", 1), ("ani", self.MAX_FRAMES)):
+                for _, bgra in self._frames(entry[key], limit) if key in entry else []:
+                    bgra = cv2.resize(bgra, (w, h), interpolation=cv2.INTER_AREA)
+                    ncc, mae = self.compare(bgra[:, :, :3], bgra[:, :, 3] / 255, image)
+                    if ncc >= 0.9 and mae <= 8:
+                        return sid, ncc                     # 非常確定，不用再看其他候選
+                    if ncc >= 0.85 and mae <= 15 and (best is None or mae < best[0]):
+                        best = (mae, ncc, sid)
+            if len(tried) >= candidates:
+                break
+        return (best[2], best[1]) if best else None
 
 
 # ---------------------------------------------------------------- 整合 ----

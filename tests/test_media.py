@@ -43,7 +43,7 @@ def test_photos_videos_and_stickers_come_from_cache(pipeline):
         assert len(media) == 1
         m = media[0]
         if it["kind"] == "sticker":
-            assert m["source"] == "cache", msg.idx
+            assert m["source"] == "cache", (msg.idx, it.get("animated"))
             assert m["src"].endswith(f"_{it['sticker_id']}.png")
         else:
             assert m["number"] == it["number"], msg.idx

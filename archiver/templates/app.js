@@ -27,10 +27,19 @@
     });
   }
 
-  // ---- 從搜尋結果點進來時，標示關鍵字 ----
+  // ---- 從搜尋結果點進來時：顯示「返回搜尋結果」並標示關鍵字 ----
   const params = new URLSearchParams(location.search);
   const q = (params.get("q") || "").trim();
-  if (q && document.querySelector("main.chat")) {
+  const chat = document.querySelector("main.chat");
+  if (q && chat) {
+    const back = "index.html?q=" + encodeURIComponent(q);
+    const bar = document.createElement("a");
+    bar.className = "back-to-results";
+    bar.href = back;
+    bar.textContent = "‹ 返回「" + q + "」的搜尋結果";
+    chat.prepend(bar);
+    document.querySelectorAll('header.bar a[href="index.html"]').forEach((a) => { a.href = back; });
+
     const lower = q.toLowerCase();
     document.querySelectorAll(".bubble").forEach((el) => {
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -81,7 +90,16 @@
       results.appendChild(head);
       results.appendChild(frag);
     };
-    input.addEventListener("input", render);
+    // 把關鍵字寫進網址：從訊息頁按「上一頁」或「返回搜尋結果」回來時，結果還在
+    let timer = null;
+    input.addEventListener("input", () => {
+      render();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const term = input.value.trim();
+        history.replaceState(null, "", term ? "?q=" + encodeURIComponent(term) : location.pathname);
+      }, 300);
+    });
     if (q) { input.value = q; render(); }
   }
 })();

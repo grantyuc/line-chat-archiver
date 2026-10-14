@@ -17,6 +17,7 @@ from collections import Counter
 from archiver.build import build, load_chat, save_chat
 from archiver.capture import Capture, CaptureError
 from archiver.device import Device, DeviceError
+from archiver.device_u2 import connect
 from archiver.screen import parse_dump
 from archiver.txt_parser import parse_file
 
@@ -55,10 +56,44 @@ def cmd_inspect(args):
               f"  {r.text[:30]!r}")
         if r.kind == "unknown":
             print(f"      元件：{', '.join(r.ids)}")
+    if args.tree:
+        print_unknown_trees(data)
+
+
+def print_unknown_trees(xml):
+    """印出未知列的完整元件樹（id、類別、範圍、描述），用來新增支援。文字訊息的內容不印。"""
+    from archiver.screen import LIST_ID, _bounds, _rid, _row, _row_nodes
+    root = ET.fromstring(xml)
+    nodes = list(root.iter("node"))
+    lst = next((n for n in nodes if _rid(n) == LIST_ID), None)
+    if lst is None:
+        return
+    width = max(_bounds(n)[2] for n in nodes)
+    for row_node in _row_nodes(lst):
+        row = _row(row_node, width, _bounds(lst))
+        if row.kind != "unknown":
+            continue
+        print(f"\n未知列 y={row.bounds[1]}～{row.bounds[3]}：")
+
+        def walk(node, depth):
+            rid, cls = _rid(node), node.get("class", "").split(".")[-1]
+            text = "" if rid == "chat_ui_message_text" else node.get("text", "")[:24]
+            desc = node.get("content-desc", "")[:24]
+            print(f"  {'  ' * depth}{rid or '-'}  {cls}  {_bounds(node)}"
+                  + (f"  desc={desc!r}" if desc else "") + (f"  text={text!r}" if text else ""))
+            for child in node.findall("node"):
+                walk(child, depth + 1)
+
+        walk(row_node, 0)
 
 
 def cmd_capture(args):
-    Capture(Device(), args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps).run()
+    device = connect(args.backend)
+    try:
+        Capture(device, args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps).run()
+    finally:
+        if hasattr(device, "close"):
+            device.close()
 
 
 def cmd_build(args):
@@ -91,7 +126,10 @@ def main():
         p.add_argument("--me", help="自己的顯示名稱（群組聊天用；一對一會自動判斷）")
 
     def capture_opts(p):
-        p.add_argument("--drag", type=float, default=0.4, help="每步拖曳聊天區高度的比例（預設 0.4）")
+        p.add_argument("--drag", type=float, default=0.5,
+                       help="每步拖曳聊天區高度的比例（預設 0.5；太大時高的照片可能沒有一張截圖拍得完整）")
+        p.add_argument("--backend", choices=("auto", "u2", "adb"), default="auto",
+                       help="auto：有裝 uiautomator2 就用（每步約 2 秒），否則用 adb（約 6 秒）")
         p.add_argument("--duration", type=int, default=1000, help="每次滑動的毫秒數（預設 1000）")
         p.add_argument("--max-steps", type=int, default=5000, help="最多捲幾步（預設 5000）")
 
@@ -120,6 +158,7 @@ def main():
     p.set_defaults(func=cmd_run)
     p = sub.add_parser("inspect", help="檢查一份 uiautomator dump")
     p.add_argument("xml")
+    p.add_argument("--tree", action="store_true", help="另外印出未知列的完整元件樹")
     p.set_defaults(func=cmd_inspect)
 
     args = ap.parse_args()

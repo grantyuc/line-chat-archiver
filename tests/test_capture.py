@@ -66,3 +66,18 @@ def test_resume_after_interruption(tmp_path):
     uniques, warnings = stitch(screens, offsets)
     assert warnings == []
     assert got(uniques) == expected(items)
+
+
+def test_fast_mode_drag_without_fling(tmp_path):
+    _, items = make_chat(days=3)
+    device = FakeChat(items, fast=True)
+    cap, steps = run_capture(tmp_path, device)
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    uniques, warnings = stitch(screens, offsets)
+    assert warnings == []
+    assert got(uniques) == expected(items)
+    # 拖曳一半聊天區、沒有慣性：每步位移固定
+    moving = [s["dy"] for s in steps[1:] if s["dy"]][:-1]     # 最後一次碰到頂端，只捲一部分
+    assert max(moving) - min(moving) <= 4
+    assert min(moving) >= int((2143 - 278) * 0.5) - 4

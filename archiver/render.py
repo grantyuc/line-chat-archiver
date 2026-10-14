@@ -87,8 +87,9 @@ def _page(title, body, extra_head=""):
             f"</head><body>{body}<script src=\"assets/app.js\"></script></body></html>\n")
 
 
-def render(workdir, chat, media=None, log=print):
-    """輸出到 <工作目錄>/site/。media 為 media.resolve 的結果（可為 None）。"""
+def render(workdir, chat, media=None, notices=None, log=print):
+    """輸出到 <工作目錄>/site/。media 為 media.resolve 的結果（可為 None）；
+    notices 為 {訊息索引: [置中通知文字]}，插在該則訊息之後（例如收回通知）。"""
     site = os.path.join(workdir, "site")
     os.makedirs(os.path.join(site, "assets"), exist_ok=True)
     for name in ("style.css", "app.js"):
@@ -115,6 +116,9 @@ def render(workdir, chat, media=None, log=print):
             show_head = key != last_key
             last_key = key if msg.kind not in ("unsend", "system") else None
             out.append(_message_html(msg, by_msg.get(str(msg.idx), []), avatars.get(msg.sender), show_head))
+            for text in (notices or {}).get(msg.idx, []):
+                out.append(f'<div class="notice"><span>{html.escape(text)}</span></div>')
+                last_key = None
             if msg.kind == "text" or msg.kind in ICONS:
                 search.append([page_name(month), msg.idx, msg.date, msg.time, msg.sender, msg.body])
         prev_link = f'<a href="{page_name(names[k - 1])}">‹ {names[k - 1]}</a>' if k > 0 else "<span></span>"

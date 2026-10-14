@@ -42,3 +42,26 @@ def test_text_only_site_without_capture(tmp_path):
     site = build(work, device=None, log=lambda *a: None)
     page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
     assert 'class="missing"' in page or "[照片]" in page or "[貼圖]" in page or 'class="bubble"' in page
+
+
+def test_unsend_notice_goes_after_the_previous_matched_message(tmp_path):
+    from archiver.build import previous_message, unsend_notices
+    from archiver.render import render
+    from archiver.screen import Row
+
+    rows = [Row("text", (0, 0, 1, 1), text="a"), Row("unknown", (0, 0, 1, 1), text="您已收回訊息", side="center"),
+            Row("text", (0, 0, 1, 1), text="b"), Row("unknown", (0, 0, 1, 1), text="以下為尚未閱讀的訊息", side="center")]
+    pairs = [(0, 4.0), (2, 4.0)]
+    notices = unsend_notices(rows, pairs, [1, 3])
+    assert notices == [(1, "您已收回訊息")]
+    assert previous_message(pairs, 1) == 0
+    assert previous_message(pairs, 0) is None
+
+    txt, _ = make_chat(days=1, per_day=3)
+    chat = parse(txt)
+    site = render(str(tmp_path), chat, notices={chat.messages[0].idx: ["您已收回訊息"]}, log=lambda *a: None)
+    page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
+    first = page.index(f'id="m{chat.messages[0].idx}"')
+    notice = page.index("您已收回訊息")
+    second = page.index(f'id="m{chat.messages[1].idx}"')
+    assert first < notice < second

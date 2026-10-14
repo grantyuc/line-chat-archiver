@@ -29,22 +29,36 @@ def jpg(img, q=90):
     return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])[1].tobytes()
 
 
-def make_sticker(seed, w=259, h=224):
-    """透明背景上的幾個色塊，模擬貼圖 PNG（BGRA）。"""
+def make_sticker(seed, w=259, h=224, frame=0):
+    """透明背景上的幾個色塊，模擬貼圖 PNG（BGRA）。frame 讓色塊位移，模擬動畫的不同影格。"""
     r = np.random.default_rng(seed)
     img = np.zeros((h, w, 4), np.uint8)
-    for _ in range(6):
+    for k in range(6):
         color = tuple(int(v) for v in r.integers(0, 255, 3)) + (255,)
-        cv2.ellipse(img, (int(r.integers(40, w - 40)), int(r.integers(40, h - 40))),
-                    (int(r.integers(15, 60)), int(r.integers(15, 60))), int(r.integers(0, 180)), 0, 360, color, -1)
+        cx, cy = int(r.integers(40, w - 40)), int(r.integers(40, h - 40))
+        ax, ay, angle = int(r.integers(15, 60)), int(r.integers(15, 60)), int(r.integers(0, 180))
+        cv2.ellipse(img, (cx + frame * 4 * (k % 2), cy - frame * 3 * (k % 3 == 0)), (ax, ay), angle + frame * 8,
+                    0, 360, color, -1)
     return img
 
 
-def composite(bgra, size, bg=BG):
-    w, h = size
+def apng(frames):
+    """BGRA 影格 → APNG 位元組。"""
+    import io
+
+    from PIL import Image
+    pics = [Image.fromarray(f[:, :, [2, 1, 0, 3]]) for f in frames]
+    buf = io.BytesIO()
+    pics[0].save(buf, format="PNG", save_all=True, append_images=pics[1:], duration=100, loop=0)
+    return buf.getvalue()
+
+
+def composite(bgra, background):
+    """把貼圖縮放到 background 的大小，疊在背景上。"""
+    h, w = background.shape[:2]
     img = cv2.resize(bgra, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
     alpha = img[:, :, 3:] / 255
-    out = img[:, :, :3] * alpha + np.array(bg, np.float32) * (1 - alpha)
+    out = img[:, :, :3] * alpha + background.astype(np.float32) * (1 - alpha)
     return out.astype(np.uint8)
 
 
@@ -61,8 +75,8 @@ def texture(seed, w, h):
 class FakeChat:
     """items：[{kind, text, time, self, sender}]，由舊到新；kind 為 date/text/sticker/photo/video。"""
 
-    def __init__(self, items, fling=0.04):
-        self.items, self.fling = [], fling
+    def __init__(self, items, fling=0.04, fast=False):
+        self.items, self.fling, self.fast = [], fling, fast
         y = 40
         prev_other = False
         for i, item in enumerate(items):
@@ -111,11 +125,17 @@ class FakeChat:
                     if it["idx"] % 3 == 0:
                         self.files[folder + ".original"] = jpg(cv2.resize(base, (2400, base.shape[0] * 2)), 92)
             elif it["kind"] == "sticker":
-                x1, x2 = self._x_span(it)
-                sticker = make_sticker(_seed(it["idx"], "sticker"))
-                it["display"] = composite(sticker, (x2 - x1, it["y2"] - it["y1"]))
+                seed = _seed(it["idx"], "sticker")
                 it["sticker_id"] = str(5000000 + it["idx"])
-                self.files[f"{STICKERS}/1000/{it['sticker_id']}"] = cv2.imencode(".png", sticker)[1].tobytes()
+                base = f"{STICKERS}/1000/{it['sticker_id']}"
+                self.files[base] = cv2.imencode(".png", make_sticker(seed))[1].tobytes()
+                if it["idx"] % 2:          # 動態貼圖：畫面上停在第 3 格
+                    frames = [make_sticker(seed, frame=k) for k in range(4)]
+                    self.files[base + "_ani"] = apng(frames)
+                    it["sticker_bgra"] = frames[2]
+                    it["animated"] = True
+                else:
+                    it["sticker_bgra"] = make_sticker(seed)
         # 其他聊天室的照片和其他貼圖，當作干擾
         for k in range(30):
             self.files[f"{CHATS}/c{'cd' * 16}/messages/{300000 + k}.thumb"] = jpg(texture(_seed("other", k), 500, 375))
@@ -165,6 +185,10 @@ class FakeChat:
         distance = (y2 - y1) * (1 + self.fling)
         self.offset = max(0, self.offset - int(distance))
 
+    def drag(self, x, y1, y2):
+        """快速模式的拖曳：停住再放開，沒有慣性。"""
+        self.offset = max(0, self.offset - (y2 - y1))
+
     def screencap(self):
         img = self.render()
         return cv2.imencode(".png", img)[1].tobytes(), img
@@ -200,6 +224,8 @@ class FakeChat:
 
     def _draw(self):
         canvas = np.full((self.total + 2000, W, 3), BG, np.uint8)
+        for y in range(0, canvas.shape[0], 36):          # 有花紋的聊天背景
+            cv2.line(canvas, (0, y), (W, y + 120), (214, 222, 230), 7)
         for it in self.items:
             y1, y2 = it["y1"], it["y2"]
             if it["kind"] == "date":
@@ -211,6 +237,8 @@ class FakeChat:
                 cv2.rectangle(canvas, (x1, y1), (x2, y2), color, -1)
                 label = hashlib.md5(it["text"].encode()).hexdigest()[:12]
                 cv2.putText(canvas, label, (x1 + 20, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
+            elif it["kind"] == "sticker":
+                canvas[y1:y2, x1:x2] = composite(it["sticker_bgra"], canvas[y1:y2, x1:x2])
             else:
                 canvas[y1:y2, x1:x2] = it["display"]
             if it["avatar"]:

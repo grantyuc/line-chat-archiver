@@ -35,7 +35,7 @@ def dump_offset(prev, cur):
 
 
 class Capture:
-    def __init__(self, device, workdir, drag=0.4, duration_ms=1000, stop_after=3, max_steps=5000,
+    def __init__(self, device, workdir, drag=0.5, duration_ms=1000, stop_after=3, max_steps=5000,
                  idle_wait=2.0, log=print):
         self.device = device
         self.dir = os.path.join(workdir, "capture")
@@ -84,6 +84,25 @@ class Capture:
         screen = parse_dump(xml)
         if not screen.has_line or screen.list_bounds[3] <= screen.list_bounds[1]:
             raise CaptureError("畫面上沒有 LINE 聊天室：請解鎖手機、打開要封存的聊天室後再執行，會從中斷處接續。")
+        return png, img, xml, screen
+
+    def _grab_fast(self, roi, prev_img, prev_screen, tries=3):
+        """快速模式（拖曳後停住再放開，畫面不會慣性滑動）：dump → 截圖，各一次。
+
+        用「截圖算出的位移」和「dump 中同一則訊息的位置差」互相核對；不一致代表兩者
+        拍到的不是同一個畫面（例如還在動），就重拍。
+        """
+        for _ in range(tries):
+            xml = self.device.dump()
+            png, img = self.device.screencap()
+            screen = parse_dump(xml)
+            if not screen.has_line or screen.list_bounds[3] <= screen.list_bounds[1]:
+                raise CaptureError("畫面上沒有 LINE 聊天室：請解鎖手機、打開要封存的聊天室後再執行，會從中斷處接續。")
+            dy_img, score = find_offset(prev_img, img, roi)
+            dy_dump = dump_offset(prev_screen, screen)
+            if dy_img is None or score < LOW_SCORE or dy_dump is None or abs(dy_img - dy_dump) <= 6:
+                return png, img, xml, screen
+            time.sleep(0.2)
         return png, img, xml, screen
 
     def _roi(self, screen):
@@ -143,9 +162,13 @@ class Capture:
         prev_img, prev_screen = img, screen
         t0, done_here = time.time(), 0
         while step < self.max_steps:
-            self.device.swipe(round(img.shape[1] / 2 * scale_x), round(y1 * scale_y),
-                              round((y1 + drag) * scale_y), self.duration_ms)
-            png, img, xml, screen = self._grab(roi)
+            x, ya, yb = round(img.shape[1] / 2 * scale_x), round(y1 * scale_y), round((y1 + drag) * scale_y)
+            if getattr(self.device, "fast", False):
+                self.device.drag(x, ya, yb)
+                png, img, xml, screen = self._grab_fast(roi, prev_img, prev_screen)
+            else:
+                self.device.swipe(x, ya, yb, self.duration_ms)
+                png, img, xml, screen = self._grab(roi)
             dy, score, method = self._offset(prev_img, prev_screen, img, screen, roi)
             step += 1
             done_here += 1
