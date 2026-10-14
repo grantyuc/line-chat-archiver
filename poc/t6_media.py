@@ -81,7 +81,7 @@ def cmd_scan(args):
 def cmd_match(args):
     import cv2
 
-    from imgmatch import features, score
+    from imgmatch import SAME_PHOTO, features, load, score, similarity
 
     shot = imread(args.image, cv2.IMREAD_GRAYSCALE)
     if shot is None:
@@ -89,6 +89,8 @@ def cmd_match(args):
     if args.box:
         x1, y1, x2, y2 = map(int, args.box.split(","))
         shot = shot[y1:y2, x1:x2]
+    crop_w, crop_h = shot.shape[1], shot.shape[0]
+    shot = load(shot)
     query = features(shot)
     if query is None or len(query[0]) < 10:
         sys.exit("縮圖上的特徵點太少，請框大一點或換一張照片。")
@@ -99,24 +101,26 @@ def cmd_match(args):
         target = features(path)
         if target is None:
             continue
-        inliers, good = score(query, target)
-        results.append((inliers, good, os.path.basename(path)))
-
+        inliers, good, h = score(query, target)
+        results.append([inliers, good, 0.0, path, h])
     if not results:
         sys.exit(f"{args.dir} 裡沒有可讀的圖片。")
-    results.sort(reverse=True)
+    results.sort(key=lambda r: -r[0])
+    for r in results[:5]:          # 只對前幾名做像素驗證
+        r[2] = similarity(shot, r[3], r[4])
+
     log = Report("t6_match")
-    log(f"縮圖 {shot.shape[1]}x{shot.shape[0]}，特徵點 {len(k1)} 個；比對 {len(results)} 張原檔")
-    for inliers, good, name in results[:5]:
-        log(f"    幾何一致點 {inliers:4d}  初步配對 {good:4d}  {name}")
-    top = results[0][0]
-    near = [r for r in results[1:] if r[0] >= 0.9 * top]   # 同分的多半是同一張照片存了兩次
-    rest = [r[0] for r in results[1:] if r[0] < 0.9 * top]
-    if top >= 25 and top >= 3 * max(rest[0] if rest else 0, 1):
-        log("→ 第一名明顯勝出：特徵比對可以把縮圖對回原檔。"
-            + (f"另有 {len(near)} 張分數相近，請確認是不是重複的檔案。" if near else ""))
+    log(f"縮圖 {crop_w}x{crop_h}，特徵點 {len(k1)} 個；比對 {len(results)} 張原檔")
+    log(f"（一致區塊比例 ≥ {SAME_PHOTO:.0%} 視為同一張；幾何一致點只用來挑候選）")
+    for inliers, good, ncc, path, _ in results[:5]:
+        log(f"    一致區塊 {ncc:4.0%}  幾何一致點 {inliers:4d}  初步配對 {good:4d}  {os.path.basename(path)}")
+    same = [r for r in results[:5] if r[2] >= SAME_PHOTO]
+    if len(same) == 1:
+        log("→ 找到同一張：特徵比對加像素驗證可以把縮圖對回原檔。")
+    elif same:
+        log(f"→ 有 {len(same)} 張都是同一張照片，可能是重複存檔。")
     else:
-        log("→ 第一名沒有明顯勝出：請確認原檔真的在資料夾裡、框選範圍是照片本身，再換幾張試。")
+        log("→ 沒有找到同一張：請確認原檔真的在資料夾裡、框選範圍是照片本身，再換幾張試。")
     log.done()
 
 

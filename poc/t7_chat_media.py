@@ -9,8 +9,9 @@
   python poc/t7_chat_media.py --pull 30      # 另外拉回最新的 30 個檔案，分析格式與尺寸
   python poc/t7_chat_media.py --chat 目錄名   # 拉回該聊天室的快取，用特徵點比對測試 6 的照片
 
-聊天室目錄名是 u/c/m 開頭的 33 碼 ID。不知道是哪一個時：先在手機上點開測試聊天室裡的
-一張照片，再執行本腳本，「最近有新檔案的聊天室目錄」排第一的通常就是它。
+聊天室目錄名是 u/c/m 開頭的 33 碼 ID。找出測試聊天室的方法：請對方在測試聊天室傳一張
+「新」照片，在手機上點開看大圖，再執行 python poc/t7_chat_media.py --recent 10，
+「最近 10 分鐘內有變動的檔案」裡的目錄就是它。點開舊照片不一定會寫入新檔案。
 """
 import argparse
 import hashlib
@@ -72,7 +73,7 @@ def match_chat(log, chat):
     """用特徵點比對測試 6 下載的每一張照片，找出它在這個聊天室快取中的版本。"""
     from PIL import Image
 
-    from imgmatch import features, score
+    from imgmatch import SAME_PHOTO, features, score, similarity
 
     if not os.path.isdir(T6_DIR):
         log("\n（找不到 poc/out/t6_media，無法比對）")
@@ -86,7 +87,7 @@ def match_chat(log, chat):
         log("拉取失敗：請確認目錄名稱正確（見「最近有新檔案的聊天室目錄」）。")
         return
 
-    cache = []                     # (訊息 ID, 版本, 尺寸, 特徵)
+    cache = []                     # (訊息 ID, 路徑, 特徵)
     versions = defaultdict(dict)   # 訊息 ID -> {版本: 尺寸}
     for dirpath, _, names in os.walk(local):
         for name in sorted(names):
@@ -98,11 +99,11 @@ def match_chat(log, chat):
             if feats is None:
                 continue
             with Image.open(path) as im:
-                dims = im.size
-            cache.append((m.group(0), variant(name), dims, feats))
-            versions[m.group(0)][variant(name)] = dims
-    log(f"\n== 測試 6 的照片在 {chat} 快取中的版本（特徵點比對，一致點 ≥ 25 視為同一張）==")
+                versions[m.group(0)][variant(name)] = im.size
+            cache.append((m.group(0), path, feats))
+    log(f"\n== 測試 6 的照片在 {chat} 快取中的版本 ==")
     log(f"快取中可比對的圖片：{len(cache)} 張，涵蓋 {len(versions)} 則訊息")
+    log(f"（先用特徵點挑出前 5 個候選，再疊圖逐塊比對，一致區塊 ≥ {SAME_PHOTO:.0%} 才算同一張）")
 
     summary = Counter()
     for name in sorted(os.listdir(T6_DIR)):
@@ -112,16 +113,17 @@ def match_chat(log, chat):
             continue
         with Image.open(path) as im:
             qw, qh = im.size
-        best = Counter()           # 訊息 ID -> 最高一致點
-        for mid, _, _, feats in cache:
-            best[mid] = max(best[mid], score(query, feats)[0])
-        ranked = best.most_common(2)
-        if not ranked or ranked[0][1] < 25:
+        scored = sorted(((score(query, feats), mid, cpath) for mid, cpath, feats in cache),
+                        key=lambda r: -r[0][0])[:5]
+        verified = [(similarity(path, cpath, h), inliers, mid)
+                    for (inliers, _, h), mid, cpath in scored if inliers >= 8]
+        same = sorted((v for v in verified if v[0] >= SAME_PHOTO), reverse=True)
+        if not same:
             summary["找不到"] += 1
-            log(f"    {name}  {qw}x{qh}  → 找不到")
+            best = max(verified, default=(0.0, 0, "-"))
+            log(f"    {name}  {qw}x{qh}  → 找不到（最接近：訊息 {best[2]}，一致區塊 {best[0]:.0%}，一致點 {best[1]}）")
             continue
-        mid, top = ranked[0]
-        unsure = len(ranked) > 1 and ranked[1][1] * 3 > top
+        ncc, inliers, mid = same[0]
         have = versions[mid]
         kind = "有原檔" if "原檔" in have else "有一般版" if "一般" in have else "只有縮圖"
         summary[kind] += 1
@@ -129,7 +131,7 @@ def match_chat(log, chat):
         if bw * bh >= qw * qh:
             summary["快取最佳版本不小於下載檔"] += 1
         listed = "、".join(f"{v} {d[0]}x{d[1]}" for v, d in have.items())
-        log(f"    {name}  {qw}x{qh}  → 訊息 {mid}（一致點 {top}{'，不確定' if unsure else ''}）：{listed}")
+        log(f"    {name}  {qw}x{qh}  → 訊息 {mid}（一致區塊 {ncc:.0%}，一致點 {inliers}）：{listed}")
     order = ("有原檔", "有一般版", "只有縮圖", "找不到", "快取最佳版本不小於下載檔")
     log("小結：" + "，".join(f"{k} {summary[k]}" for k in order))
 
@@ -195,6 +197,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pull", type=int, default=0, metavar="N", help="拉回最新的 N 個檔案分析格式")
     ap.add_argument("--chat", metavar="目錄名", help="拉回這個聊天室的快取，與測試 6 的照片做特徵點比對")
+    ap.add_argument("--recent", type=int, default=60, metavar="分鐘",
+                    help="列出最近幾分鐘內有變動的檔案（預設 60）")
     args = ap.parse_args()
 
     log = Report("t7_chat_media")
@@ -218,6 +222,20 @@ def main():
     log(f"\n== 聊天室目錄（共 {len(per_chat)} 個，依大小列前 10）==")
     for chat, (n, size) in sorted(per_chat.items(), key=lambda kv: -kv[1][1])[:10]:
         log(f"    {chat}  {n} 個檔案  {mb(size)}")
+
+    log("\n== du 最大的 8 個聊天室目錄，對照實際列出的大小（差很多代表有檔案沒被列出）==")
+    for line in shell(f"du -sk {CHATS}/* 2>/dev/null | sort -rn | head -n 8").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0].isdigit():
+            chat = os.path.basename(parts[1].strip())
+            log(f"    {chat}  du {mb(int(parts[0]) * 1024):>12}  列出 {mb(per_chat[chat][1]):>12}")
+
+    log(f"\n== 最近 {args.recent} 分鐘內有變動的檔案（直接問手機，不經過上面的清單）==")
+    recent = shell(f"find {CHATS} -mmin -{args.recent} -type f 2>/dev/null | head -n 20").split()
+    for path in recent:
+        log("    " + path[len(CHATS) + 1:])
+    if not recent:
+        log("    沒有")
 
     latest = defaultdict(int)
     for _, mtime, rel in files:
