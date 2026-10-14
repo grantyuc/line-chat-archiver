@@ -20,14 +20,16 @@ def _locate(src, dst, y0, band, lo=None, hi=None):
     return first + loc[1] - y0, float(score)
 
 
+GOOD_DIFF = 4.0      # 重疊區平均灰階差在此以下，視為位置正確（只剩 JPEG 雜訊）
+
+
 def find_offset(a, b, roi, expect=None):
     """估計聊天區從 a 到 b 往下移了幾像素。回傳 (dy, 分數)；dy=None 表示無法判定。
 
-    roi = (上緣, 下緣, 頂部緩衝)。expect 為預期位移：另外在預期值附近找（捲得遠、重疊區小時
-    全範圍的搜尋可能找不到）。
-
-    水平帶比對可能被有規律的背景（桌布花紋）騙到，所以每個候選位移（含「沒有動」）都再比較
-    整個重疊區，取差異最小的。
+    roi = (上緣, 下緣, 頂部緩衝)。先用多條水平帶各自找出候選位移，再比較每個候選（含「沒有動」）
+    整個重疊區的差異，取差異最小的；只比水平帶可能被有規律的背景（桌布花紋）騙到。
+    expect 為預期位移：先只在預期值附近找（捲得遠、重疊區小時全範圍的搜尋可能找不到），
+    找到的位置重疊區幾乎一致就直接採用，否則再加上全範圍的候選。
     """
     top, bottom, buffer = roi
     ga = cv2.resize(cv2.cvtColor(a[top:bottom], cv2.COLOR_BGR2GRAY), None, fx=0.5, fy=0.5,
@@ -35,17 +37,27 @@ def find_offset(a, b, roi, expect=None):
     gb = cv2.resize(cv2.cvtColor(b[top:bottom], cv2.COLOR_BGR2GRAY), None, fx=0.5, fy=0.5,
                     interpolation=cv2.INTER_AREA)
     skip = buffer // 2
-    found = [_search(ga, gb, skip)]
-    if expect is not None:
-        tol = max(60, abs(expect) // 4)
-        found.append(_search(ga, gb, skip, (expect - tol) // 2, (expect + tol) // 2))
     if _overlap_diff(ga, gb, 0, skip) < 1.0:                 # 兩張幾乎一樣：沒有動
         return 0, 1.0
-    found = [(dy, score) for dy, score in found if dy is not None and score >= LOW_SCORE]
-    if not found:
+    scores = {}                                             # 候選位移 -> 最高分數
+
+    def add(candidates):
+        for dy, score in candidates:
+            if score >= LOW_SCORE and score > scores.get(dy, 0):
+                scores[dy] = score
+        if not scores:
+            return None
+        return min((_overlap_diff(ga, gb, dy, skip), -score, dy) for dy, score in scores.items())
+
+    best = None
+    if expect is not None:
+        tol = max(60, abs(expect) // 4)
+        best = add(_candidates(ga, gb, skip, (expect - tol) // 2, (expect + tol) // 2))
+    if best is None or best[0] > GOOD_DIFF:
+        best = add(_candidates(ga, gb, skip))
+    if best is None:
         return None, 0.0
-    diffs = [(_overlap_diff(ga, gb, dy, skip), -score, dy) for dy, score in found]
-    diff, neg_score, dy = min(diffs)
+    _, neg_score, dy = best
     return dy * 2, -neg_score
 
 
@@ -61,8 +73,8 @@ def _overlap_diff(ga, gb, dy, skip):
     return float(cv2.absdiff(pa, pb).mean())
 
 
-def _search(ga, gb, skip, lo=None, hi=None):
-    """正向用 a 的水平帶去 b 找，反向用 b 的帶回 a 找，取分數最高者（半解析度）。
+def _candidates(ga, gb, skip, lo=None, hi=None):
+    """每條水平帶找到的 (位移, 分數)（半解析度）。正向用 a 的帶去 b 找，反向用 b 的帶回 a 找。
 
     不限範圍時，正向只用 a 的上半部、反向只用 b 的下半部（往上捲時這兩塊一定還在畫面上）；
     限定範圍時，用所有可能落在重疊區的帶。頂端 skip 像素內有浮動日期條，不用。
@@ -70,18 +82,16 @@ def _search(ga, gb, skip, lo=None, hi=None):
     h = ga.shape[0]
     band = max(20, h // 6)
     step = max(1, band // 2)
-    best = (None, 0.0)
-    forward = range(skip, (h // 2 if lo is None else h) - band + 1, step)
-    for y0 in forward:
+    found = []
+    for y0 in range(skip, (h // 2 if lo is None else h) - band + 1, step):
         dy, score = _locate(ga, gb, y0, band, lo, hi)
-        if score > best[1]:
-            best = (dy, score)
-    backward = range(h - band, (h // 2 if lo is None else skip) - 1, -step)
-    for y0 in backward:
+        if dy is not None:
+            found.append((dy, score))
+    for y0 in range(h - band, (h // 2 if lo is None else skip) - 1, -step):
         dy, score = _locate(gb, ga, y0, band, None if hi is None else -hi, None if lo is None else -lo)
-        if score > best[1]:
-            best = (None if dy is None else -dy, score)
-    return best
+        if dy is not None:
+            found.append((-dy, score))
+    return found
 
 
 def is_still(a, b, roi):

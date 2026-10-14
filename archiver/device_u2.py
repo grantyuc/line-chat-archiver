@@ -5,10 +5,16 @@
 畫面不會再慣性滑動，不必等它停下。截圖直接存服務傳回的 JPEG，不再轉成 PNG
 （省下編碼時間，檔案也小很多）。
 
+uiautomator2 3.x 每個請求都重新經 adb 建立一次連線，實測約 60 毫秒；一次拖曳要送好幾個觸控
+事件，累積起來很可觀。所以這裡自己和服務維持同一條連線（HTTP keep-alive），出錯時才改回
+uiautomator2 原本的方式。
+
 第一次連線時，uiautomator2 會在手機上安裝它的服務 App（ATX）。擷取結束後會停止服務，
 以免和內建的 uiautomator（實機測試腳本用的）互搶。
 """
 import base64
+import http.client
+import json
 import os
 import time
 
@@ -18,8 +24,48 @@ import numpy as np
 from .device import Device, DeviceError
 
 
+class AdbConnection(http.client.HTTPConnection):
+    """經 adb 連到手機上某個 TCP 埠的 HTTP 連線；連線斷了，下一個請求會自動重連。"""
+
+    def __init__(self, adb_device, port, timeout=30):
+        super().__init__("127.0.0.1", port, timeout=timeout)
+        self.adb_device, self.remote_port = adb_device, port
+
+    def connect(self):
+        import adbutils
+        self.sock = self.adb_device.create_connection(adbutils.Network.TCP, self.remote_port)
+        self.sock.settimeout(self.timeout)
+
+
+class Rpc:
+    """uiautomator2 服務的 JSON-RPC，重複使用同一條連線。"""
+
+    HEADERS = {"Content-Type": "application/json", "Accept-Encoding": ""}
+
+    def __init__(self, conn):
+        self.conn, self.id = conn, 0
+
+    def call(self, method, *params):
+        self.id += 1
+        body = json.dumps({"jsonrpc": "2.0", "id": self.id, "method": method, "params": list(params)})
+        for attempt in (0, 1):
+            try:
+                self.conn.request("POST", "/jsonrpc/0", body, self.HEADERS)
+                resp = self.conn.getresponse()
+                data = json.loads(resp.read())
+                break
+            except (OSError, http.client.HTTPException, ValueError):
+                self.conn.close()                       # 服務關掉了閒置的連線：重連再送一次
+                if attempt:
+                    raise
+        if "error" in data:
+            raise DeviceError(f"{method} 失敗：{str(data['error'])[:300]}")
+        return data.get("result")
+
+
 class U2Device(Device):
     fast = True
+    DOWN, UP, MOVE = 0, 1, 2            # MotionEvent 的動作
 
     def __init__(self, serial=None):
         try:
@@ -31,11 +77,24 @@ class U2Device(Device):
             self.d.info                                   # 確認服務已啟動
         except Exception as e:
             raise DeviceError(f"uiautomator2 連線失敗：{e}")
+        try:
+            self.rpc = Rpc(AdbConnection(self.d._dev, self.d._device_server_port))
+            self.rpc.call("deviceInfo")
+        except Exception:
+            self.rpc = None                               # 版本不同或連不上：用 uiautomator2 原本的方式
+
+    def _call(self, method, *params):
+        if self.rpc is not None:
+            try:
+                return self.rpc.call(method, *params)
+            except Exception:
+                self.rpc = None                           # 改用 uiautomator2 原本的方式（它會自動重啟服務）
+        return getattr(self.d.jsonrpc, method)(*params)
 
     def screencap(self):
         """回傳 (JPEG 位元組, 影像)。"""
         try:
-            data = self.d.jsonrpc.takeScreenshot(1, 80)
+            data = self._call("takeScreenshot", 1, 80)
             raw = base64.b64decode(data) if data else b""
             img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) if raw else None
             if img is None:                               # 服務沒有傳回截圖時，改用一般介面
@@ -48,28 +107,25 @@ class U2Device(Device):
         return raw, img
 
     def dump(self, retries=3):
-        last = None
+        last, xml = None, None
         for _ in range(retries):
             try:
-                xml = self.d.dump_hierarchy(compressed=False)
-                if xml and "<hierarchy" in xml:
+                xml = self._call("dumpWindowHierarchy", False, 50)
+                if xml and "<node" in xml:
                     return xml.encode("utf-8")
             except Exception as e:
                 last = e
             time.sleep(0.3)
+        if xml and "<hierarchy" in xml:
+            return xml.encode("utf-8")                    # 空的畫面：交給呼叫端判斷
         raise DeviceError(f"dump 失敗：{last}")
 
-    def drag(self, x, y1, y2, steps=3, hold=0.12):
-        """由 y1 拖到 y2 後停住再放開（放開時速度為零，不會慣性滑動）。
-        第一小段只用來越過觸控誤差範圍。每個觸控事件都是一次連線，所以中間只送幾個點。"""
-        touch = self.d.touch
-        touch.down(x, y1)
-        slop = 40 if y2 > y1 else -40
-        touch.move(x, y1 + slop)
-        for k in range(1, steps + 1):
-            touch.move(x, y1 + slop + (y2 - y1) * k // steps)
+    def drag(self, x, y1, y2, hold=0.12):
+        """由 y1 一次拖到 y2，停住再放開。停住一陣子再放開，放開時速度為零，不會慣性滑動。"""
+        self._call("injectInputEvent", self.DOWN, x, y1, 0)
+        self._call("injectInputEvent", self.MOVE, x, y2, 0)
         time.sleep(hold)
-        touch.up(x, y2 + slop)
+        self._call("injectInputEvent", self.UP, x, y2, 0)
 
     def swipe(self, x, y1, y2, duration_ms):
         self.d.swipe(x, y1, x, y2, duration=duration_ms / 1000)
