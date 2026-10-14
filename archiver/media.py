@@ -10,6 +10,7 @@
 - 截圖中的貼圖是合成在聊天背景上的，所以比對前先把候選貼圖合成到同樣的背景色。
 都找不到時，用截圖裁切。
 """
+import bisect
 import json
 import os
 import re
@@ -129,6 +130,10 @@ class PhotoLibrary:
         chat_dir, count = votes.most_common(1)[0]
         self.log(f"聊天室快取目錄：{chat_dir}（{count}/{len(images)} 張照片對到）")
         return chat_dir
+
+    def chat_numbers(self, chat_dir):
+        """這個聊天室快取中有縮圖的訊息編號（由小到大）。"""
+        return sorted(int(n) for n, e in self.entries.items() if e["dir"] == chat_dir and "thumb" in e)
 
     def fetch(self, number):
         """拉回這則訊息最好的版本。回傳 (本機路徑, 版本, 格式)。"""
@@ -333,22 +338,45 @@ class FrameCache:
 
 
 def expand_albums(messages, uniques, pairs):
-    """一次傳多張的照片在畫面上是同一列（多個 media），txt 則是多則 [照片]。
-    回傳每則訊息對到的 (列索引, 該列第幾張媒體)。"""
+    """一次傳多張的照片在畫面上是同一列（多個 media），txt 則是連續多則 [照片]（同一人、同一分鐘）。
+    回傳每則訊息對到的 (列索引, 該列第幾張媒體)。橫排（more_media）中沒露出來的照片，
+    第幾張會超出該列的 media 數量，由 resolve 依快取編號推斷。"""
     slots = [(j, 0) if j is not None else None for j, _ in pairs]
+
+    def same(a, b):
+        return a.kind == "photo" and a.sender == b.sender and a.time == b.time
+
     for i, msg in enumerate(messages):
-        if slots[i] is None or msg.kind != "photo":
+        if slots[i] is None or msg.kind != "photo" or slots[i][1]:
             continue
-        j, _ = slots[i]
-        count = len(uniques[j].row.media)
-        k, nxt = 1, i + 1
-        while k < count and nxt < len(messages):
-            other = messages[nxt]
-            if other.kind != "photo" or other.sender != msg.sender or other.time != msg.time or slots[nxt] is not None:
-                break
-            slots[nxt] = (j, k)
-            k, nxt = k + 1, nxt + 1
+        j = slots[i][0]
+        row = uniques[j].row
+        if len(row.media) <= 1 and not row.more_media:
+            continue
+        # 對齊可能把這一列配給這批照片的任何一則：往前、往後找出整批
+        start = i
+        while start > 0 and slots[start - 1] is None and same(messages[start - 1], msg):
+            start -= 1
+        end = i
+        while end + 1 < len(messages) and slots[end + 1] is None and same(messages[end + 1], msg):
+            end += 1
+        group = list(range(start, end + 1))
+        if not row.more_media:
+            group = group[:len(row.media)]
+        for k, m in enumerate(group):
+            slots[m] = (j, k)
     return slots
+
+
+def infer_hidden(numbers, used, after, before=None):
+    """橫排中沒露出來的照片：取同一聊天室快取中 after 之後的下一個未用過的編號。
+    必須小於 before（下一則已對到的媒體編號），否則代表快取中缺了這張，回傳 None。"""
+    k = bisect.bisect_right(numbers, after)
+    while k < len(numbers) and numbers[k] in used:
+        k += 1
+    if k >= len(numbers) or (before is not None and numbers[k] >= before):
+        return None
+    return numbers[k]
 
 
 def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir=None,
@@ -387,12 +415,27 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if chat_dir:
             photo_lib.build_index({chat_dir})
 
+    def photo_item(number):
+        path, variant, kind = photo_lib.fetch(number)
+        thumb_rel = f"media/photos/{number}_t.jpg"
+        if not os.path.exists(os.path.join(site, thumb_rel)):
+            shutil.copyfile(photo_lib.thumb_path(number), os.path.join(site, thumb_rel))
+        full_rel = f"media/photos/{number}.{kind}"
+        if not os.path.exists(os.path.join(site, full_rel)):
+            shutil.copyfile(path, os.path.join(site, full_rel))
+        return {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
+                "source": variant, "number": number}
+
     result, stats = {}, Counter()
-    for msg, slot in zip(chat.messages, slots):
+    numbers, hidden = {}, []          # 訊息位置 -> 快取編號；橫排中沒露出來的照片
+    for pos, (msg, slot) in enumerate(zip(chat.messages, slots)):
         if msg.kind not in ("sticker", "photo", "video") or slot is None:
             continue
         image = media_crop(slot)
-        if image is None or not image.size:
+        if image is None:
+            hidden.append(pos)
+            continue
+        if not image.size:
             continue
         item = None
         if msg.kind == "sticker" and sticker_lib:
@@ -407,21 +450,34 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         elif msg.kind in ("photo", "video") and photo_lib and chat_dir:
             hit = photo_lib.lookup(image)
             if hit:
-                number = hit[0]
-                path, variant, kind = photo_lib.fetch(number)
-                thumb_rel = f"media/photos/{number}_t.jpg"
-                if not os.path.exists(os.path.join(site, thumb_rel)):
-                    shutil.copyfile(photo_lib.thumb_path(number), os.path.join(site, thumb_rel))
-                full_rel = f"media/photos/{number}.{kind}"
-                if not os.path.exists(os.path.join(site, full_rel)):
-                    shutil.copyfile(path, os.path.join(site, full_rel))
-                item = {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
-                        "source": variant, "number": number}
+                item = photo_item(hit[0])
+                numbers[pos] = int(hit[0])
         if item is None:
             item = {"type": "sticker" if msg.kind == "sticker" else "image",
                     "src": save_crop(f"{msg.idx}_{slot[1]}", image), "source": "screenshot"}
         stats[f"{msg.kind}:{item['source']}"] += 1
         result.setdefault(msg.idx, []).append(item)
+
+    # 橫排中沒露出來的照片：依快取編號推斷（同一批送出的照片編號相鄰）
+    if hidden and photo_lib and chat_dir:
+        ordered = photo_lib.chat_numbers(chat_dir)
+        for pos in hidden:
+            j = slots[pos][0]
+            prev = next((numbers[p] for p in range(pos - 1, -1, -1)
+                         if p in numbers and slots[p] and slots[p][0] == j), None)
+            later = next((numbers[p] for p in range(pos + 1, len(slots)) if p in numbers and p not in hidden), None)
+            number = infer_hidden(ordered, set(numbers.values()), prev, later) if prev is not None else None
+            if number is None:
+                stats["photo:hidden"] += 1
+                continue
+            item = photo_item(str(number))
+            if item["type"] != "image":
+                stats["photo:hidden"] += 1
+                continue
+            numbers[pos] = number
+            item["inferred"] = True
+            stats[f"photo:{item['source']}:inferred"] += 1
+            result.setdefault(chat.messages[pos].idx, []).append(item)
 
     # 頭像以 txt 的發話者名稱存（畫面上的名稱可能是自己設的暱稱，和 txt 不同）
     avatars = {}

@@ -69,8 +69,8 @@ def test_album_row_is_shared_by_consecutive_photo_messages():
     from archiver.media import expand_albums
     msgs = [NS(kind="photo", sender="威廷", time="10:00"), NS(kind="photo", sender="威廷", time="10:00"),
             NS(kind="photo", sender="威廷", time="10:00"), NS(kind="photo", sender="威廷", time="10:05")]
-    album = NS(row=NS(media=[(0, 0, 1, 1)] * 3))
-    single = NS(row=NS(media=[(0, 0, 1, 1)]))
+    album = NS(row=NS(media=[(0, 0, 1, 1)] * 3, more_media=False))
+    single = NS(row=NS(media=[(0, 0, 1, 1)], more_media=False))
     pairs = [(0, 5.0), (None, 0), (None, 0), (1, 5.0)]
     assert expand_albums(msgs, [album, single], pairs) == [(0, 0), (0, 1), (0, 2), (1, 0)]
 
@@ -113,3 +113,48 @@ def test_old_sticker_index_is_rebuilt(tmp_path):
     lib = StickerLibrary(device, str(cache), log=lambda *a: None)
     assert len(lib.owner) >= 40
     assert "version" in np.load(cache / "sticker_index.npz").files
+
+
+def test_carousel_album_visible_photos_matched_and_hidden_ones_inferred(tmp_path):
+    txt, items = make_chat(days=3, per_day=20, seed=4, albums=True)
+    chat = parse(txt)
+    device = FakeChat(items)
+    work = tmp_path / "work"
+    cap = Capture(device, str(work), idle_wait=0, log=lambda *a: None)
+    steps = cap.run()
+    screens = []
+    for s in steps:
+        with open(cap.path(s["step"], "xml"), "rb") as f:
+            screens.append(parse_dump(f.read()))
+    uniques, _ = stitch(screens, [s["dy"] for s in steps])
+    albums = [u.row for u in uniques if u.row.more_media]
+    assert albums and all(r.kind == "photo" and len(r.media) == 2 for r in albums)
+    pairs = align(chat.messages, [u.row for u in uniques])
+    data = resolve(str(work), chat, uniques, pairs, device=device, log=lambda *a: None)
+
+    expected = []                        # 每則訊息應該對到的快取編號
+    for it in device.items:
+        if it["kind"] == "date":
+            continue
+        if it["kind"] == "album":
+            expected += it["numbers"]
+        else:
+            expected.append(it.get("number"))
+    assert len(expected) == len(chat.messages)
+    inferred = 0
+    for msg, number in zip(chat.messages, expected):
+        if msg.kind != "photo":
+            continue
+        media = data["media"].get(str(msg.idx))
+        assert media and media[0].get("number") == number, (msg.idx, media)
+        inferred += bool(media[0].get("inferred"))
+    assert inferred == sum(it["count"] - 2 for it in device.items if it["kind"] == "album")
+
+
+def test_infer_hidden():
+    from archiver.media import infer_hidden
+    numbers = [100, 101, 102, 103, 110, 120]
+    assert infer_hidden(numbers, {100, 101}, 101) == 102
+    assert infer_hidden(numbers, {100, 101, 102}, 101) == 103
+    assert infer_hidden(numbers, {100, 101}, 101, before=102) is None    # 快取中缺了這張
+    assert infer_hidden(numbers, set(), 120) is None

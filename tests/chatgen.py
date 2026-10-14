@@ -5,7 +5,7 @@ import random
 WEEK = "一二三四五六日"
 
 
-def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我"):
+def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我", albums=False):
     rng = random.Random(seed)
     lines = [f"[LINE] 與{partner}的聊天記錄", "儲存日期：2026/10/14 下午5:27", ""]
     items = []
@@ -19,6 +19,12 @@ def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我"):
             is_self = rng.random() < 0.5
             sender = me if is_self else partner
             kind = rng.choices(["text", "sticker", "photo", "video"], [0.75, 0.12, 0.1, 0.03])[0]
+            if albums and i % 9 == 4:
+                count = 3 + (i + d) % 2          # 一次傳 3 或 4 張
+                lines.extend(f"{hhmm}\t{sender}\t[照片]" for _ in range(count))
+                items.append({"kind": "album", "count": count, "text": "", "time": hhmm, "self": is_self,
+                              "sender": sender})
+                continue
             text = ""
             if kind == "text":
                 text = rng.choice(["好", "哈哈", "OK", f"第{d}天第{i}則訊息"])

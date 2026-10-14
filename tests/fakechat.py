@@ -90,6 +90,8 @@ class FakeChat:
                 height = 392
             elif it["kind"] == "photo":
                 height = 840 if i % 3 == 0 else 517
+            elif it["kind"] == "album":
+                height = 312
             else:
                 height = 500
             show_avatar = it["kind"] != "date" and not it.get("self") and not prev_other
@@ -124,6 +126,21 @@ class FakeChat:
                     self.files[folder] = jpg(base, 85)
                     if it["idx"] % 3 == 0:
                         self.files[folder + ".original"] = jpg(cv2.resize(base, (2400, base.shape[0] * 2)), 92)
+            elif it["kind"] == "album":
+                # 一次傳多張：快取中編號相鄰；畫面上的橫排只露出前兩張，裁成正方形
+                it["numbers"], it["displays"] = [], []
+                for k in range(it["count"]):
+                    base = texture(_seed(it["idx"], "album", k), 1200, 900)
+                    thumb = cv2.resize(base, (500, 375), interpolation=cv2.INTER_AREA)
+                    number += 1
+                    it["numbers"].append(str(number))
+                    folder = f"{CHATS}/{CHAT_ID}/messages/{number}"
+                    self.files[folder + ".thumb"] = jpg(thumb, 80)
+                    self.files[folder] = jpg(base, 85)
+                    if k < 2:
+                        square = thumb[:, 62:437]
+                        it["displays"].append(cv2.resize(square, (312, 312), interpolation=cv2.INTER_AREA))
+                number += 6
             elif it["kind"] == "sticker":
                 seed = _seed(it["idx"], "sticker")
                 it["sticker_id"] = str(5000000 + it["idx"])
@@ -208,6 +225,8 @@ class FakeChat:
             width = min(760, 150 + 26 * max(len(s) for s in it["text"].split("\n")))
         elif it["kind"] == "sticker":
             width = 453
+        elif it["kind"] == "album":
+            width = 630
         else:
             width = 388
         return (W - 21 - width, W - 21) if it.get("self") else (114, 114 + width)
@@ -239,6 +258,9 @@ class FakeChat:
                 cv2.putText(canvas, label, (x1 + 20, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
             elif it["kind"] == "sticker":
                 canvas[y1:y2, x1:x2] = composite(it["sticker_bgra"], canvas[y1:y2, x1:x2])
+            elif it["kind"] == "album":
+                canvas[y1:y2, x1:x1 + 312] = it["displays"][0]
+                canvas[y1:y2, x1 + 318:x1 + 630] = it["displays"][1]
             else:
                 canvas[y1:y2, x1:x2] = it["display"]
             if it["avatar"]:
@@ -250,6 +272,11 @@ class FakeChat:
         for it, y1, y2 in self.visible():
             if it["kind"] == "date":
                 rows.append(xmlgen.date_row(y1, y2, it["text"]))
+            elif it["kind"] == "album":
+                x1, _ = self._x_span(it)
+                boxes = [(x1, y1, x1 + 312, y2), (x1 + 318, y1, x1 + 630, y2)]
+                rows.append(xmlgen.album_row(y1, y2, it["time"], it.get("self"), boxes,
+                                             sender=it.get("sender", "") if it["avatar"] else ""))
             elif it["kind"] == "text":
                 rows.append(xmlgen.text_row(y1, y2, it["text"], it["time"], it.get("self"),
                                             sender=it.get("sender", "") if it["avatar"] else ""))

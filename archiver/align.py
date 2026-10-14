@@ -57,6 +57,8 @@ def pair_score(msg, row, day, use_side=True):
         if row.kind != msg.kind:
             return None
         score = 3.0
+    elif msg.kind == "call" and row.kind == "call":
+        score = 3.0
     elif msg.kind in NON_BUBBLE:
         if row.kind == "unknown":
             score = 1.5

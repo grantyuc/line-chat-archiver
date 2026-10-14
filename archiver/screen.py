@@ -7,6 +7,10 @@
 - 頭像：chat_ui_row_thumbnail，描述「某某的個人圖片」
 - 貼圖：chat_ui_row_sticker_view；照片：chat_ui_row_image；影片：chat_ui_row_video_thumbnail
 - 日期條：chat_ui_date_indicator_text（9月2日 週三）
+- 一次傳多張照片：chathistory_row_msg_grid_image_root 底下的 chat_ui_image_item_N / chat_ui_image。
+  有「變更為格狀模式」按鈕（chat_ui_row_carousel_image_viewer_toggle_button）時是可左右滑的橫排，
+  畫面上只露出前幾張，其餘不在 dump 裡（more_media=True）。
+- 通話紀錄：chat_ui_row_message_voip_history（語音通話結束 00:07）
 - 蓋在聊天區上的元件：公告列 chat_ui_announcement_*、捲到最新按鈕 chat_ui_scroll_to_bottom_button
 """
 import re
@@ -30,6 +34,7 @@ class Row:
     media: list = field(default_factory=list)   # 貼圖、照片（可多張）、影片的範圍
     avatar: tuple = ()
     date_label: str = ""           # 這一列上方的日期條（日期條也可能和訊息在同一列）
+    more_media: bool = False       # 多張照片的橫排：還有照片沒露出來
     partial: bool = False          # 有一部分在聊天區外
     ids: list = field(default_factory=list)     # 這一列出現過的元件 id（除錯用）
 
@@ -96,7 +101,14 @@ def _row(node, width, list_bounds):
         elif rid == "chat_ui_row_sticker_view":
             row.kind, content = "sticker", b
             row.media.append(b)
-        elif rid == "chat_ui_row_image" or (
+        elif "carousel_image_viewer_toggle" in rid:
+            row.more_media = True
+        elif "voip_history" in rid and rid.endswith("voip_history"):
+            row.kind = "call"
+            content = b
+        elif rid in ("chat_ui_row_voip_status_message", "chat_ui_row_voip_duration_message"):
+            row.text = (row.text + " " + text).strip()
+        elif rid in ("chat_ui_row_image", "chat_ui_image") or (
                 "照片" in desc and n.get("class", "").endswith("ImageView") and rid != "chat_ui_row_thumbnail"):
             if b not in row.media:
                 row.kind = "photo"
@@ -107,7 +119,8 @@ def _row(node, width, list_bounds):
             if b not in row.media:
                 row.kind, content = "video", b
                 row.media.append(b)
-        elif desc and rid not in ("chat_ui_row_message_share_button", "chat_ui_reaction_list_react_button"):
+        elif desc and rid not in ("chat_ui_row_message_share_button", "chat_ui_reaction_list_react_button",
+                                  "chat_ui_row_voip_history_icon"):
             descs.append(desc)
         if text and row.kind == "unknown" and rid not in ("chat_ui_row_timestamp", "chat_ui_row_read_count"):
             descs.append(text)
