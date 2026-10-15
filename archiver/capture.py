@@ -182,17 +182,21 @@ class Capture:
             raise CaptureError("畫面上沒有 LINE 聊天室：請解鎖手機、打開要封存的聊天室後再執行，會從中斷處接續。")
         return png, img, xml, screen
 
-    def _grab_fast(self, roi, prev_img, prev_screen, expect, tries=3):
+    def _grab_fast(self, roi, prev_img, prev_screen, expect, first=None, tries=3):
         """快速模式（拖曳後停住再放開，畫面不會慣性滑動）：dump → 截圖，各一次。
+        first 為拖曳時已經同時取得的 (dump, (截圖, 影像))。
 
         用「截圖算出的位移」和「dump 中同一則訊息的位置差」互相核對；不一致代表兩者
         拍到的不是同一個畫面（例如還在動），就重拍。回傳的最後一項是 (位移, 分數, 方法)。
         """
-        for _ in range(tries):
-            with self._timed("dump"):
-                xml = self.device.dump()
-            with self._timed("截圖"):
-                png, img = self.device.screencap()
+        for attempt in range(tries):
+            if attempt == 0 and first is not None:
+                xml, (png, img) = first
+            else:
+                with self._timed("dump"):
+                    xml = self.device.dump()
+                with self._timed("截圖"):
+                    png, img = self.device.screencap()
             with self._timed("比對"):
                 screen = parse_dump(xml)
                 if not screen.has_line or screen.list_bounds[3] <= screen.list_bounds[1]:
@@ -321,9 +325,15 @@ class Capture:
             x = round(img.shape[1] * DRAG_X[streak % len(DRAG_X)] * scale_x)
             ya, yb = round(y1 * scale_y), round((y1 + distance) * scale_y)
             if fast:
-                with self._timed("拖曳"):
-                    self.device.drag(x, ya, yb)
-                png, img, xml, screen, (dy, score, method) = self._grab_fast(roi, prev_img, prev_screen, distance)
+                first = None
+                if hasattr(self.device, "drag_and_grab"):
+                    with self._timed("拖曳＋dump＋截圖"):
+                        first = self.device.drag_and_grab(x, ya, yb)
+                else:
+                    with self._timed("拖曳"):
+                        self.device.drag(x, ya, yb)
+                png, img, xml, screen, (dy, score, method) = self._grab_fast(roi, prev_img, prev_screen, distance,
+                                                                             first)
                 if dy is not None and dy > distance + roi[2]:
                     self.overshoot += 1
                     self.log(f"    警告：捲了 {dy}px，比預期的 {distance}px 遠，較高的列可能沒有完整出現。")

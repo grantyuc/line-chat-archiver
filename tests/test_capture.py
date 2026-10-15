@@ -234,3 +234,19 @@ def test_resume_after_an_unsaved_drag_scrolls_back_to_the_last_frame(tmp_path):
         screens, offsets = load(cap, steps)
         uniques, warnings = stitch(screens, offsets)
         assert warnings == [] and got(uniques) == expected(items)
+
+
+def test_fast_mode_with_release_and_screenshot_during_the_dump(tmp_path):
+    class Parallel(FakeChat):
+        def drag_and_grab(self, x, y1, y2):
+            self.drag(x, y1, y2)
+            return self.dump(), self.screencap()
+
+    _, items = make_chat(days=3)
+    device = Parallel(items, fast=True)
+    cap, steps = run_capture(tmp_path, device)
+    assert steps[-1]["done"] and device.offset == 0
+    screens, offsets = load(cap, steps)
+    uniques, warnings = stitch(screens, offsets)
+    assert warnings == [] and got(uniques) == expected(items)
+    assert "拖曳＋dump＋截圖" in cap.timing and "拖曳" not in cap.timing
