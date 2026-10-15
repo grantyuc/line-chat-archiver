@@ -211,7 +211,7 @@ class FakeChat:
             xa, xb = self._x_span(it)
             if it["kind"] in self.sticky and sy1 <= y1 <= sy2 and xa <= x <= xb:
                 return
-        target = max(0, self.offset - (y2 - y1))
+        target = min(max(0, self.offset - (y2 - y1)), max(0, self.total - self.view))
         if self.wall is not None and target < self.wall:
             if self.wall_left is None or self.wall_left > 0:     # 還在載入更舊的訊息
                 self.wall_left = None if self.wall_left is None else self.wall_left - 1

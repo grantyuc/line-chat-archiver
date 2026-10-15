@@ -219,3 +219,18 @@ def test_second_capture_on_the_same_workdir_is_refused(tmp_path):
     _, items = make_chat(days=1)
     cap, steps = run_capture(tmp_path, FakeChat(items, fast=True))
     assert steps[-1]["done"] and not os.path.exists(os.path.join(cap.dir, "capture.lock"))
+
+
+def test_resume_after_an_unsaved_drag_scrolls_back_to_the_last_frame(tmp_path):
+    _, items = make_chat(days=4)
+    for extra in (1, 2):                          # 中斷時已多拖了一步、兩步，卻沒存檔
+        device = FakeChat(items, fast=True)
+        work = tmp_path / f"extra{extra}"
+        run_capture(work, device, max_steps=6)
+        for _ in range(extra):
+            device.drag(540, 400, 400 + 1300)
+        cap, steps = run_capture(work, device)
+        assert steps[-1]["done"] and device.offset == 0
+        screens, offsets = load(cap, steps)
+        uniques, warnings = stitch(screens, offsets)
+        assert warnings == [] and got(uniques) == expected(items)

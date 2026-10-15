@@ -222,6 +222,31 @@ class Capture:
         room = bottom - buffer - max(cut)
         return most if room < view // 10 else min(most, room)
 
+    def _find_last_frame(self, prev_img, prev_screen, roi, width, height, back_steps=6):
+        """接續時，找出目前畫面相對最後一步的位移。回傳 (截圖, 影像, dump, 畫面, (位移, 分數, 方法))。
+
+        中斷時可能剛拖完一步、還沒存檔，畫面已經比最後一步多捲了一段，重疊區很小。先照「多捲了
+        一步」去找；還找不到時（快速模式）往新的訊息方向捲回一點再找，最多捲回約兩個畫面。
+        """
+        fast = getattr(self.device, "fast", False)
+        top, bottom, _ = roi
+        for k in range(back_steps + 1):
+            png, img, xml, screen = self._grab(roi)
+            for expect in (None, self._distance(prev_screen, roi)) if fast else (None,):
+                dy, score, method = self._offset(prev_img, prev_screen, img, screen, roi, expect)
+                if dy is not None:
+                    if k:
+                        self.log(f"往回捲了 {k} 次，找到上次停下的位置。")
+                    return png, img, xml, screen, (dy, score, method)
+            if not fast or k == back_steps:
+                return None
+            back = int((bottom - top) * 0.35)
+            middle = (top + bottom) // 2
+            sx, sy = width / img.shape[1], height / img.shape[0]
+            self.device.drag(round(img.shape[1] / 2 * sx), round((middle + back // 2) * sy),
+                             round((middle - back // 2) * sy))          # 手指往上：往新的訊息方向捲
+        return None
+
     def _roi(self, screen):
         top, bottom = screen.list_bounds[1], screen.list_bounds[3]
         for o in screen.overlays:            # 釘在頂端的公告列
@@ -269,11 +294,11 @@ class Capture:
             with open(self.path(step, "xml"), "rb") as f:
                 prev_screen = parse_dump(f.read())
             roi = self._roi(prev_screen)
-            png, img, xml, screen = self._grab(roi)
-            dy, score, method = self._offset(prev_img, prev_screen, img, screen, roi)
-            if dy is None:
-                raise CaptureError(
-                    f"手機畫面和上次停下的位置對不上。請把聊天室捲到和 {self.path(step, 'png')} 差不多的位置再執行。")
+            found = self._find_last_frame(prev_img, prev_screen, roi, width, height)
+            if found is None:
+                raise CaptureError(f"手機畫面和上次停下的位置對不上。請把聊天室捲到和 {self.image_path(step)} "
+                                   "差不多的位置再執行。")
+            png, img, xml, screen, (dy, score, method) = found
             step += 1
             self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": "resume:" + method})
             self.log(f"從第 {step} 步接續（位移 {dy}px）")
