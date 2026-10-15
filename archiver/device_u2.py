@@ -82,7 +82,7 @@ def decode_shot(data):
 class U2Device(Device):
     fast = True
     DOWN, UP, MOVE = 0, 1, 2            # MotionEvent 的動作
-    drag_moves = 3                      # 越過觸控誤差之後分幾段拖完
+    drag_moves = 3                      # 越過觸控誤差之後分幾段拖完（見 drag）
 
     def __init__(self, serial=None, reuse=True):
         try:
@@ -158,7 +158,7 @@ class U2Device(Device):
 
         先小移 40px：手指按在訊息上時，聊天列表要等移動超過觸控誤差才接手，而接手的那一下
         移動不會捲動。所以先用小移讓列表接手，之後的移動才全部拿來捲。不先小移、一次跳到終點，
-        實機上就捲不動。之後分 drag_moves 段拖完（預設 3 段，實機驗證過）。
+        實機上就捲不動。之後分 3 段拖完（實機驗證過；只拖 1 段反而較慢，也較常捲不動）。
         """
         end = self._press_and_move(x, y1, y2, steps)
         time.sleep(hold)
@@ -174,14 +174,14 @@ class U2Device(Device):
             self._call("injectInputEvent", self.MOVE, x, y1 + slop + (y2 - y1) * k // steps, 0)
         return y2 + slop
 
-    def drag_and_grab(self, x, y1, y2, hold=0.12, settle=0.15):
+    def drag_and_grab(self, x, y1, y2, steps=None, hold=0.12, settle=0.15):
         """拖曳並取得畫面，回傳 (dump, (JPEG, 影像))。
 
         最後一段移動之後畫面就不會再動（停住再放開，沒有慣性），所以 dump 立刻開始；同時用第二條
         連線停住、放開、再等一下讓新出現的圖片載入，然後截圖。dump 約 0.5 秒，這些都藏在它裡面。
         沒有第二條連線、或第二條連線出錯時，依序做。
         """
-        end = self._press_and_move(x, y1, y2)
+        end = self._press_and_move(x, y1, y2, steps)
         helper = self.helper
         if helper is None:
             time.sleep(hold)

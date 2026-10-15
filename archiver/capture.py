@@ -5,9 +5,11 @@
   拖完後下緣還要留在畫面內，下一步它就會完整出現。所以每一列都至少完整出現在一張截圖裡，
   一般情況每步可捲聊天區的四分之三。
 - 位移估計用截圖的重疊區（實機測試 5）；比對分數太低時改用 dump 中同一則訊息的位置差。
-- 捲不動時換個位置再拖（有些列會攔住觸控），並逐次拉長等待（可能正在載入更舊的訊息）。
-  連續 stop_after 步沒有位移，而且畫面上出現 txt 最前面的訊息，才判定到頂；
-  一直捲不動、最舊的訊息卻還沒出現時，停下來但不標成完成。
+- 捲不動時立刻換個位置再拖一次（有些列會攔住觸控）；再捲不動，多半是 LINE 正在載入更舊的
+  訊息（捲動先變慢、停住，幾秒後又能捲），之後每隔 idle_wait 秒換個位置再拖，載入完就能馬上繼續。
+  有 txt 時，畫面上出現 txt 最前面的訊息、又連續 3 步捲不動，才判定到頂；一直捲不動
+  （give_up 步）、最舊的訊息卻還沒出現時，停下來但不標成完成。沒有 txt 時，連續 stop_after 步
+  捲不動就判定到頂。
 - 中斷後再執行會接續：先確認目前畫面和最後一步的截圖有重疊，再繼續往上捲。
   已標成完成的也會再試著往上捲，確認真的到頂。
 """
@@ -15,7 +17,7 @@ import json
 import os
 import statistics
 import time
-from collections import Counter
+from collections import Counter, deque
 from contextlib import contextmanager
 
 import cv2
@@ -27,7 +29,8 @@ from .screen import parse_dump
 
 SLOW_DRAG = 0.5          # adb 模式的滑動有慣性，距離不固定，維持每步半個聊天區
 DRAG_X = (0.5, 0.12, 0.88)   # 捲不動時依序換到這些水平位置（畫面寬度的比例）再拖
-MAX_WAIT = 10.0          # 捲不動時，每次最多等幾秒
+TOP_STALLS = 3           # 有 txt 對照時，最舊的訊息出現、又連續幾步捲不動才算到頂
+RECENT = 20              # 速度和捲不動的次數，看最近幾步
 
 
 class CaptureError(RuntimeError):
@@ -80,8 +83,8 @@ def dump_offset(prev, cur):
 
 
 class Capture:
-    def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=3, max_steps=None,
-                 idle_wait=2.0, oldest=(), give_up=8, log=print):
+    def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=12, max_steps=None,
+                 idle_wait=1.0, oldest=(), give_up=40, log=print):
         self.device = device
         self.dir = os.path.join(workdir, "capture")
         self.drag = drag                    # 快速模式每步最多拖曳聊天區的多少比例
@@ -203,7 +206,10 @@ class Capture:
                     raise CaptureError("畫面上沒有 LINE 聊天室：請解鎖手機、打開要封存的聊天室後再執行，會從中斷處接續。")
                 found = self._offset(prev_img, prev_screen, img, screen, roi, expect)
                 dy_dump = dump_offset(prev_screen, screen)
-            if found[0] is not None and (found[2] != "image" or dy_dump is None or abs(found[0] - dy_dump) <= 6):
+            # 只靠 dump 判定、而且往回捲或捲得比預期遠很多：可能有列正在載入、改變高度，重拍
+            doubtful = found[2] == "dump" and found[0] is not None and not 0 <= found[0] <= expect + roi[2]
+            if found[0] is not None and not doubtful and (
+                    found[2] != "image" or dy_dump is None or abs(found[0] - dy_dump) <= 6):
                 return png, img, xml, screen, found
             time.sleep(0.3)                    # 位移判定不了或兩者不一致：畫面可能還在變（載入圖片等），重拍
         if found[0] is None or dy_dump is None:
@@ -318,7 +324,8 @@ class Capture:
         scale_x, scale_y = width / img.shape[1], height / img.shape[0]
         streak = 0                          # 連續捲不動的步數
         prev_img, prev_screen = img, screen
-        t0, done_here = time.time(), 0
+        done_here = 0
+        recent = deque([(time.time(), None)], maxlen=RECENT + 1)     # (每步結束的時間, 位移)
         while True:
             if self.max_steps is not None and done_here >= self.max_steps:
                 self.log(f"這次已捲 {done_here} 步，達到 --max-steps 上限，先停下。再執行同一個指令會接續。")
@@ -340,6 +347,9 @@ class Capture:
                 if dy is not None and dy > distance + roi[2]:
                     self.overshoot += 1
                     self.log(f"    警告：捲了 {dy}px，比預期的 {distance}px 遠，較高的列可能沒有完整出現。")
+                elif dy is not None and dy < 0:
+                    self.log(f"    警告：判定為往回捲了 {-dy}px（{method}）；可能有列在載入時改變了高度，"
+                             "這一步前後的訊息在報告中可能重複出現。")
             else:
                 with self._timed("拖曳"):
                     self.device.swipe(x, ya, yb, self.duration_ms)
@@ -350,15 +360,20 @@ class Capture:
             step += 1
             done_here += 1
             streak = streak + 1 if dy == 0 else 0
-            finished = streak >= self.stop_after and self.at_oldest(screen)
-            stuck = not finished and streak >= max(self.give_up, self.stop_after)
+            if self.oldest:
+                finished = streak >= TOP_STALLS and self.at_oldest(screen)
+                stuck = not finished and streak >= self.give_up
+            else:
+                finished, stuck = streak >= self.stop_after, False
             with self._timed("存檔"):
                 self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": method, "done": finished})
-            per_step = (time.time() - t0) / done_here
+            recent.append((time.time(), dy))
+            per_step = (recent[-1][0] - recent[0][0]) / (len(recent) - 1)
             self.log(f"第 {step} 步：位移 {dy if dy is not None else '?'}px（{method}），"
-                     f"畫面上 {len(screen.rows)} 列，平均每步 {per_step:.1f} 秒")
-            if done_here % 20 == 0:
-                self.log("    " + self.timing_summary(done_here))
+                     f"畫面上 {len(screen.rows)} 列，最近每步 {per_step:.1f} 秒")
+            if done_here % RECENT == 0:
+                stalls = sum(1 for _, d in list(recent)[1:] if d == 0)
+                self.log(f"    最近 {RECENT} 步中捲不動 {stalls} 步；" + self.timing_summary(done_here))
                 status = getattr(self.device, "status", None)
                 if callable(status):
                     self.log("    " + status())
@@ -371,11 +386,12 @@ class Capture:
                 self.log(f"連續 {streak} 步捲不動，但 txt 最前面的訊息（例如「{self.oldest[0][:20]}」）還沒出現。"
                          "請看一下手機畫面（是否跳出視窗、正在載入），處理好、不要捲動聊天室，再執行同一個指令接續。")
                 break
-            if dy == 0:
-                # 可能正在載入更舊的訊息：逐次多等一點；下一次也換個位置拖（這裡的列可能攔住了觸控）
-                wait = min(self.idle_wait * 2 ** (streak - 1), MAX_WAIT)
-                self.log(f"    沒有移動：等 {wait:.0f} 秒後換個位置再拖")
-                time.sleep(wait)
+            if dy == 0 and streak == 1:
+                self.log("    沒有移動：換個位置再拖")        # 可能是這裡的列攔住了觸控，不必等
+            elif dy == 0:
+                # 多半是 LINE 正在載入更舊的訊息：每隔一下就再拖，載入完就能馬上繼續
+                self.log(f"    連續 {streak} 步沒有移動（可能正在載入更舊的訊息）：{self.idle_wait:.0f} 秒後再拖")
+                time.sleep(self.idle_wait)
             prev_img, prev_screen = img, screen
         if done_here:
             self.log(self.timing_summary(done_here))

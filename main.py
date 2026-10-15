@@ -93,8 +93,6 @@ def cmd_capture(args):
     has_txt = os.path.exists(os.path.join(args.work, "chat.json"))
     oldest = oldest_texts(load_chat(args.work).messages) if has_txt else []
     device = connect(args.backend, reuse=not args.new_connections)
-    if args.drag_moves:
-        device.drag_moves = args.drag_moves
     try:
         Capture(device, args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps,
                 oldest=oldest).run()
@@ -136,8 +134,6 @@ def main():
         p.add_argument("--drag", type=float, default=0.75,
                        help="uiautomator2 模式每步最多拖曳聊天區高度的多少（預設 0.75；實際距離依畫面調整，"
                             "確保每一列都完整出現過）。adb 模式固定 0.5")
-        p.add_argument("--drag-moves", type=int, choices=(1, 2, 3),
-                       help="uiautomator2 拖曳時，越過觸控誤差之後分幾段拖完（預設 3，實機驗證過；較少較快）")
         p.add_argument("--new-connections", action="store_true",
                        help="uiautomator2 每個請求各開一條連線（原本的方式；較慢，排查問題用）")
         p.add_argument("--backend", choices=("auto", "u2", "adb"), default="auto",
