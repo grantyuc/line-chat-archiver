@@ -143,7 +143,7 @@ def main():
         p.add_argument("--backend", choices=("auto", "u2", "adb"), default="auto",
                        help="auto：有裝 uiautomator2 就用（快速模式），否則用 adb（約 6 秒一步）")
         p.add_argument("--duration", type=int, default=1000, help="每次滑動的毫秒數（預設 1000）")
-        p.add_argument("--max-steps", type=int, default=5000, help="最多捲幾步（預設 5000）")
+        p.add_argument("--max-steps", type=int, help="這次最多捲幾步就先停下（預設不限，捲到最舊的訊息為止）")
 
     def build_opts(p):
         p.add_argument("--chat-dir", help="聊天室快取目錄 ID（u/c/m 開頭）；省略時自動用照片比對找出")

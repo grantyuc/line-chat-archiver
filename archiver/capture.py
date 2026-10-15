@@ -80,7 +80,7 @@ def dump_offset(prev, cur):
 
 
 class Capture:
-    def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=3, max_steps=5000,
+    def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=3, max_steps=None,
                  idle_wait=2.0, oldest=(), give_up=8, log=print):
         self.device = device
         self.dir = os.path.join(workdir, "capture")
@@ -89,7 +89,7 @@ class Capture:
         self.stop_after = stop_after
         self.oldest = [t for t in oldest if t.strip()]   # txt 最前面幾則文字訊息，用來確認真的到頂
         self.give_up = give_up              # 最舊的訊息還沒出現時，最多連續幾步捲不動就先停下
-        self.max_steps = max_steps
+        self.max_steps = max_steps          # 這次執行最多捲幾步；None 為不限
         self.idle_wait = idle_wait
         self.log = log
         self.timing = Counter()             # 各階段累計秒數
@@ -319,7 +319,10 @@ class Capture:
         streak = 0                          # 連續捲不動的步數
         prev_img, prev_screen = img, screen
         t0, done_here = time.time(), 0
-        while step < self.max_steps:
+        while True:
+            if self.max_steps is not None and done_here >= self.max_steps:
+                self.log(f"這次已捲 {done_here} 步，達到 --max-steps 上限，先停下。再執行同一個指令會接續。")
+                break
             distance = self._distance(prev_screen, roi) if fast else int((bottom - top) * min(self.drag, SLOW_DRAG))
             y1 = top + (bottom - top - distance) // 2
             x = round(img.shape[1] * DRAG_X[streak % len(DRAG_X)] * scale_x)

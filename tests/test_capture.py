@@ -250,3 +250,16 @@ def test_fast_mode_with_release_and_screenshot_during_the_dump(tmp_path):
     uniques, warnings = stitch(screens, offsets)
     assert warnings == [] and got(uniques) == expected(items)
     assert "拖曳＋dump＋截圖" in cap.timing and "拖曳" not in cap.timing
+
+
+def test_max_steps_limits_each_run_not_the_total(tmp_path):
+    _, items = make_chat(days=4)
+    device = FakeChat(items, fast=True)
+    logs = []
+    cap = Capture(device, str(tmp_path), idle_wait=0, max_steps=3, log=logs.append)
+    assert len(cap.run()) == 4                        # 第 0 步＋這次 3 步
+    assert any("max-steps" in m for m in logs)
+    steps = cap.run()                                 # 總步數已超過 3：還是要接續捲 3 步
+    assert len(steps) == 4 + 1 + 3 and device.offset > 0
+    _, steps = run_capture(tmp_path, device)
+    assert steps[-1]["done"] and device.offset == 0
