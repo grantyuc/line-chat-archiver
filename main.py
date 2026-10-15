@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 
 from archiver.build import build, load_chat, save_chat
-from archiver.capture import Capture, CaptureError, oldest_texts
+from archiver.capture import Capture, CaptureError, first_frame, next_update, oldest_texts
 from archiver.device import Device, DeviceError
 from archiver.device_u2 import connect
 from archiver.render import PAGE_MIN
@@ -57,12 +57,13 @@ def cmd_inspect(args):
               f"  {r.text[:30]!r}")
         if r.kind == "unknown":
             print(f"      元件：{', '.join(r.ids)}")
-    if args.tree:
-        print_unknown_trees(data)
+    if args.tree or args.match:
+        print_trees(data, args.match)
 
 
-def print_unknown_trees(xml):
-    """印出未知列的完整元件樹（id、類別、範圍、描述），用來新增支援。文字訊息的內容不印。"""
+def print_trees(xml, match=None):
+    """印出列的完整元件樹（id、類別、範圍、描述），用來新增支援。文字訊息的內容不印。
+    match 為空時印未知列；否則印元件 id 含有 match 的列。"""
     from archiver.screen import LIST_ID, _bounds, _rid, _row, _row_nodes
     root = ET.fromstring(xml)
     nodes = list(root.iter("node"))
@@ -72,9 +73,11 @@ def print_unknown_trees(xml):
     width = max(_bounds(n)[2] for n in nodes)
     for row_node in _row_nodes(lst):
         row = _row(row_node, width, _bounds(lst))
-        if row.kind != "unknown":
+        if match and not any(match in i for i in row.ids):
             continue
-        print(f"\n未知列 y={row.bounds[1]}～{row.bounds[3]}：")
+        if not match and row.kind != "unknown":
+            continue
+        print(f"\n{row.kind} 列 y={row.bounds[1]}～{row.bounds[3]}：")
 
         def walk(node, depth):
             rid, cls = _rid(node), node.get("class", "").split(".")[-1]
@@ -92,10 +95,16 @@ def cmd_capture(args):
     # txt 最前面的訊息用來確認真的捲到頂了；還沒 parse 時不檢查
     has_txt = os.path.exists(os.path.join(args.work, "chat.json"))
     oldest = oldest_texts(load_chat(args.work).messages) if has_txt else []
+    session = join = None
+    if args.update:
+        if first_frame(args.work) is None:
+            sys.exit("這個聊天室還沒擷取過：請先執行 capture（不加 --update）。")
+        session, join = next_update(args.work)
+        print(f"更新擷取 {session}：接上 {'上一段更新' if session != '001' else '第一次擷取'}的第一張畫面就停。")
     device = connect(args.backend, reuse=not args.new_connections)
     try:
         Capture(device, args.work, drag=args.drag, duration_ms=args.duration, max_steps=args.max_steps,
-                oldest=oldest).run()
+                oldest=oldest, session=session, join=join).run()
     finally:
         if hasattr(device, "close"):
             device.close()
@@ -134,6 +143,8 @@ def main():
         p.add_argument("--drag", type=float, default=0.75,
                        help="uiautomator2 模式每步最多拖曳聊天區高度的多少（預設 0.75；實際距離依畫面調整，"
                             "確保每一列都完整出現過）。adb 模式固定 0.5")
+        p.add_argument("--update", action="store_true",
+                       help="有新訊息時：從最新的訊息往上捲，接上上次擷取的畫面就停（存在 capture/updates/）")
         p.add_argument("--new-connections", action="store_true",
                        help="uiautomator2 每個請求各開一條連線（原本的方式；較慢，排查問題用）")
         p.add_argument("--backend", choices=("auto", "u2", "adb"), default="auto",
@@ -169,6 +180,7 @@ def main():
     p = sub.add_parser("inspect", help="檢查一份 uiautomator dump")
     p.add_argument("xml")
     p.add_argument("--tree", action="store_true", help="另外印出未知列的完整元件樹")
+    p.add_argument("--match", help="印出元件 id 含有這段文字的列的完整元件樹，例如 reaction")
     p.set_defaults(func=cmd_inspect)
 
     args = ap.parse_args()

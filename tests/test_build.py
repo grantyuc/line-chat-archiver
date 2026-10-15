@@ -115,3 +115,50 @@ def test_report_counts_album_photos_as_matched(tmp_path):
     shared = sum(it["count"] - 1 for it in device.items if it["kind"] == "album")
     assert f"photo：{photos} / {photos}（其中 {shared} 則和同一批照片共用畫面上的一列）" in report
     assert "沒對到畫面的訊息：0 則" in report
+
+
+def split_at_day(items, day):
+    """items 中第 day 個日期條（從 0 算）之前的部分。"""
+    dates = [i for i, it in enumerate(items) if it["kind"] == "date"]
+    return items[:dates[day]]
+
+
+def test_update_capture_joins_the_previous_capture(tmp_path):
+    from archiver.capture import next_update
+    work = str(tmp_path / "update")
+    txt, items = make_chat(days=4, per_day=20, seed=8)
+    chat = parse(txt)
+    save_chat(work, chat)
+    old = FakeChat(split_at_day(items, 3), fast=True)                  # 第一次擷取時只有前三天
+    Capture(old, work, idle_wait=0, log=lambda *a: None).run()
+
+    device = FakeChat(items, fast=True)                                 # 之後多了第四天的訊息
+    session, join = next_update(work)
+    assert session == "001"
+    logs = []
+    Capture(device, work, idle_wait=0, session=session, join=join, max_steps=1, log=logs.append).run()
+    session2, join2 = next_update(work)                                 # 中斷了：接續同一段
+    assert session2 == "001"
+    steps = Capture(device, work, idle_wait=0, session=session2, join=join2, log=logs.append).run()
+    assert steps[-1].get("join_dy") is not None and device.offset > 0   # 接上就停，沒有一路捲到頂
+    assert next_update(work)[0] == "002"
+
+    build(work, device=device, log=lambda *a: None)
+    report = open(os.path.join(work, "report.txt"), encoding="utf-8").read()
+    for kind in ("text", "photo", "sticker"):
+        total = sum(1 for m in chat.messages if m.kind == kind)
+        assert f"{kind}：{total} / {total}" in report, report
+    assert "更新擷取 001：" in report and "已接上上一段" in report
+    assert "沒對到畫面的訊息：0 則" in report
+
+
+def test_update_with_few_new_messages_joins_on_the_first_frame(tmp_path):
+    from archiver.capture import next_update
+    work = str(tmp_path / "few")
+    txt, items = make_chat(days=2, per_day=20, seed=3)
+    save_chat(work, parse(txt))
+    Capture(FakeChat(items[:-2], fast=True), work, idle_wait=0, log=lambda *a: None).run()
+    session, join = next_update(work)
+    steps = Capture(FakeChat(items, fast=True), work, idle_wait=0, session=session, join=join,
+                    log=lambda *a: None).run()
+    assert len(steps) == 1 and steps[0]["join_dy"] is not None

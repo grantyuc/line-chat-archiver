@@ -5,7 +5,7 @@ import os
 from collections import Counter
 
 from .align import align, infer_me, summarize
-from .capture import Capture
+from .capture import Capture, sessions
 from .media import expand_albums, resolve
 from .render import PAGE_MIN, render
 from .screen import parse_dump
@@ -29,13 +29,28 @@ def load_chat(workdir):
 
 
 def load_capture(workdir):
-    cap = Capture(None, workdir, log=lambda *a: None)
-    steps = cap.load_steps()
-    screens = []
-    for s in steps:
-        with open(cap.path(s["step"], "xml"), "rb") as f:
-            screens.append(parse_dump(f.read()))
-    return steps, screens
+    """把各段擷取由新到舊串成一串畫面。回傳 (各步紀錄, Screen, 截圖路徑, 各段摘要)。
+
+    每段第一張的位移改成「上一段（較新的那段）最後一張接上它的位移」（join_dy）；
+    沒接上時為 None，stitch 會把它當成位移不明。"""
+    steps, screens, paths, parts = [], [], [], []
+    join = 0
+    for session in sessions(workdir):
+        cap = Capture(None, workdir, session=session, log=lambda *a: None)
+        records = cap.load_steps()
+        if not records:
+            continue
+        for k, s in enumerate(records):
+            s = dict(s, session=session)
+            if k == 0 and steps:
+                s["dy"] = join
+            with open(cap.path(s["step"], "xml"), "rb") as f:
+                screens.append(parse_dump(f.read()))
+            steps.append(s)
+            paths.append(cap.image_path(s["step"]))
+        join = records[-1].get("join_dy")
+        parts.append((session, len(records), records[-1]))
+    return steps, screens, paths, parts
 
 
 def unsend_notices(rows, pairs, extra_rows):
@@ -86,7 +101,7 @@ def media_summary(chat, media):
 def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, page_min=PAGE_MIN,
           log=print):
     chat = load_chat(workdir)
-    steps, screens = load_capture(workdir)
+    steps, screens, paths, parts = load_capture(workdir)
     report = [f"聊天室：{chat.title}，txt 共 {len(chat.messages)} 則訊息"]
     uniques, pairs, media, notices = [], [(None, 0.0)] * len(chat.messages), None, []
     if steps:
@@ -94,6 +109,12 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         rows = [u.row for u in uniques]
         report.append(f"擷取：{len(steps)} 步，去重後 {len(rows)} 列"
                       + ("" if steps and steps[-1].get("done") else "（尚未捲到最舊的訊息）"))
+        for session, count, last in parts:
+            if session is None:
+                continue
+            state = (f"已接上上一段（位移 {last['join_dy']}px）" if last.get("join_dy") is not None
+                     else "尚未接上上一段：兩段之間的訊息可能重複或遺漏，請再執行 capture --update 接續")
+            report.append(f"    更新擷取 {session}：{count} 步，{state}")
         report += ["警告：" + w for w in warnings]
         if not chat.me:
             first = align(chat.messages, rows, use_side=False)
@@ -127,7 +148,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
                         "frame": uniques[j].frame if j is not None else None}
                        for m, (j, s) in zip(chat.messages, pairs)], f)
         log("取得貼圖、照片……")
-        media = resolve(workdir, chat, uniques, pairs, device=device, chat_dir=chat_dir,
+        media = resolve(workdir, chat, uniques, pairs, device=device, chat_dir=chat_dir, frame_paths=paths,
                         stickers=stickers, photos=photos, refresh=refresh, log=log)
         report.append("媒體來源：")
         report += [f"    {k}：{v}" for k, v in sorted(media["stats"].items())]

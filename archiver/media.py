@@ -389,15 +389,19 @@ class StickerLibrary:
 # ---------------------------------------------------------------- 整合 ----
 
 class FrameCache:
-    def __init__(self, capture_dir, size=8):
-        self.dir, self.size, self.items = capture_dir, size, {}
+    """依畫面順序（stitch 的 frame 編號）讀截圖，只留最近幾張在記憶體。
+    paths 為各畫面的截圖路徑；省略時，畫面順序就是 capture_dir 裡的步數。"""
 
-    def get(self, step):
-        if step not in self.items:
+    def __init__(self, capture_dir=None, size=8, paths=None):
+        self.dir, self.paths, self.size, self.items = capture_dir, paths, size, {}
+
+    def get(self, frame):
+        if frame not in self.items:
             if len(self.items) >= self.size:
                 self.items.pop(next(iter(self.items)))
-            self.items[step] = imread(image_path(self.dir, step))
-        return self.items[step]
+            path = self.paths[frame] if self.paths is not None else image_path(self.dir, frame)
+            self.items[frame] = imread(path)
+        return self.items[frame]
 
 
 def expand_albums(messages, uniques, pairs):
@@ -443,13 +447,14 @@ def infer_hidden(numbers, used, after, before=None):
 
 
 def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir=None,
-            stickers=True, photos=True, refresh=False, log=print):
-    """產生 <工作目錄>/site/media/ 與 media.json：{訊息索引: [媒體…]}、{"avatars": {名稱: 路徑}}。"""
+            stickers=True, photos=True, refresh=False, frame_paths=None, log=print):
+    """產生 <工作目錄>/site/media/ 與 media.json：{訊息索引: [媒體…]}、{"avatars": {名稱: 路徑}}。
+    frame_paths：各畫面（uniques 的 frame 編號）的截圖路徑，見 build.load_capture。"""
     cache_dir = cache_dir or os.path.join(workdir, "cache")
     site = os.path.join(workdir, "site")
     for sub in ("stickers", "photos", "crops", "avatars"):
         os.makedirs(os.path.join(site, "media", sub), exist_ok=True)
-    frames = FrameCache(os.path.join(workdir, "capture"))
+    frames = FrameCache(os.path.join(workdir, "capture"), paths=frame_paths)
     slots = expand_albums(chat.messages, uniques, pairs)
 
     def save_crop(name, image):

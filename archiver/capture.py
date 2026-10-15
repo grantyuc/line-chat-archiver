@@ -12,6 +12,9 @@
   捲不動就判定到頂。
 - 中斷後再執行會接續：先確認目前畫面和最後一步的截圖有重疊，再繼續往上捲。
   已標成完成的也會再試著往上捲，確認真的到頂。
+- 有新訊息時做「更新擷取」：存在 capture/updates/<編號>/，同樣從最新的訊息往上捲，
+  畫面接上上一段擷取的第一張（當時最新的畫面）就停，並記下兩張之間的位移（join_dy）。
+  輸出網站時把各段由新到舊串起來。
 """
 import json
 import os
@@ -44,12 +47,13 @@ def oldest_texts(messages, count=15):
     return [m.body for m in messages[:count] if m.kind == "text" and seen[m.body.strip()] == 1]
 
 
-def dump_offset(prev, cur):
+def dump_offset(prev, cur, min_matches=1):
     """用前後兩次 dump 中都只出現一次的列，估計位移。找不到或互相矛盾時回傳 None。
 
     兩邊都完整的列直接比上緣。捲得遠、重疊區小時，常常沒有一列在兩邊都完整，所以有文字的列
     就算被切掉一邊，也比兩邊都沒被切到的那一緣（以文字辨認，因為被切掉時可能看不到時間）。
     只靠一列時，那一列要夠有辨識度：兩邊都完整，或文字至少 6 個字。
+    min_matches：至少要幾列互相吻合。
     """
     def entries(screen):
         top, bottom = screen.list_bounds[1], screen.list_bounds[3]
@@ -77,16 +81,30 @@ def dump_offset(prev, cur):
         return None
     middle = statistics.median(d for d, _ in found)
     agree = [(d, strong) for d, strong in found if abs(d - middle) <= 6]
-    if len(agree) * 2 <= len(found) or (len(agree) == 1 and not agree[0][1]):
+    if len(agree) * 2 <= len(found) or (len(agree) == 1 and not agree[0][1]) or len(agree) < min_matches:
         return None
     return int(statistics.median(d for d, _ in agree))
 
 
+def join_offset(img, screen, target_img, target_screen, roi):
+    """更新擷取時，目前畫面和上一段擷取的第一張之間的位移；還沒接上時回傳 None。
+    接錯會漏掉中間的訊息，所以要求較嚴：dump 至少兩列吻合，或 dump 和截圖一致。"""
+    strong = dump_offset(screen, target_screen, min_matches=2)
+    guess = strong if strong is not None else dump_offset(screen, target_screen)
+    if guess is None:
+        return None
+    dy, score = find_offset(img, target_img, roi, guess)
+    if dy is not None and score >= LOW_SCORE and abs(dy - guess) <= 6:
+        return dy
+    return strong
+
+
 class Capture:
     def __init__(self, device, workdir, drag=0.75, duration_ms=1000, stop_after=12, max_steps=None,
-                 idle_wait=1.0, oldest=(), give_up=40, log=print):
+                 idle_wait=1.0, oldest=(), give_up=40, session=None, join=None, log=print):
         self.device = device
-        self.dir = os.path.join(workdir, "capture")
+        self.dir = session_dir(workdir, session)
+        self.join = join                    # 更新擷取：要接上的畫面 (影像, Screen)
         self.drag = drag                    # 快速模式每步最多拖曳聊天區的多少比例
         self.duration_ms = duration_ms
         self.stop_after = stop_after
@@ -292,8 +310,18 @@ class Capture:
             if os.path.exists(lock):
                 os.remove(lock)
 
+    def _joined(self, img, screen, roi):
+        """更新擷取：接上上一段了嗎？回傳要寫進紀錄的欄位。"""
+        if self.join is None:
+            return {}
+        dy = join_offset(img, screen, self.join[0], self.join[1], roi)
+        return {} if dy is None else {"join_dy": dy, "done": True}
+
     def _run(self):
         steps = self.load_steps()
+        if steps and steps[-1].get("join_dy") is not None:
+            self.log("這一段更新擷取已經接上上一段了。")
+            return steps
         if steps and steps[-1].get("done"):
             self.log("上次已判定捲到最舊的訊息；再試著往上捲，確認真的到頂。要整個重新擷取，請刪除 capture 目錄。")
         width, height, _ = self.device.screen_size()
@@ -310,14 +338,20 @@ class Capture:
                                    "差不多的位置再執行。")
             png, img, xml, screen, (dy, score, method) = found
             step += 1
-            self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": "resume:" + method})
+            joined = self._joined(img, screen, roi)
+            self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": "resume:" + method, **joined})
             self.log(f"從第 {step} 步接續（位移 {dy}px）")
         else:
             png, img, xml, screen = self._grab()
             roi = self._roi(screen)
             step = 0
-            self._save(step, png, xml, {"dy": 0, "score": 1.0, "method": "start"})
-            self.log("開始擷取：請不要碰手機。")
+            joined = self._joined(img, screen, roi)
+            self._save(step, png, xml, {"dy": 0, "score": 1.0, "method": "start", **joined})
+            self.log("開始更新擷取：從最新的訊息往上捲，接上上次擷取的畫面就停。請不要碰手機。" if self.join
+                     else "開始擷取：請不要碰手機。")
+        if joined:
+            self.log(f"已接上上次擷取的畫面（位移 {joined['join_dy']}px），新的訊息擷取完成。")
+            return self.load_steps()
 
         top, bottom, _ = roi
         fast = getattr(self.device, "fast", False)
@@ -360,13 +394,17 @@ class Capture:
             step += 1
             done_here += 1
             streak = streak + 1 if dy == 0 else 0
-            if self.oldest:
+            joined = self._joined(img, screen, roi) if dy is not None else {}
+            if joined:
+                finished, stuck = True, False
+            elif self.oldest:
                 finished = streak >= TOP_STALLS and self.at_oldest(screen)
                 stuck = not finished and streak >= self.give_up
             else:
                 finished, stuck = streak >= self.stop_after, False
             with self._timed("存檔"):
-                self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": method, "done": finished})
+                self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": method, "done": finished,
+                                            **joined})
             recent.append((time.time(), dy))
             per_step = (recent[-1][0] - recent[0][0]) / (len(recent) - 1)
             self.log(f"第 {step} 步：位移 {dy if dy is not None else '?'}px（{method}），"
@@ -374,13 +412,19 @@ class Capture:
             if done_here % RECENT == 0:
                 stalls = sum(1 for _, d in list(recent)[1:] if d == 0)
                 self.log(f"    最近 {RECENT} 步中捲不動 {stalls} 步；" + self.timing_summary(done_here))
+                if self.join:
+                    self.log("    還沒接上上次擷取的畫面。")
                 status = getattr(self.device, "status", None)
                 if callable(status):
                     self.log("    " + status())
             if dy is None:
                 self.log("    警告：這一步的位移無法判定，可能漏掉中間的訊息。")
+            if joined:
+                self.log(f"已接上上次擷取的畫面（位移 {joined['join_dy']}px），新的訊息擷取完成。")
+                break
             if finished:
-                self.log(f"連續 {streak} 步沒有移動，畫面上已是最舊的訊息。擷取完成。")
+                self.log(f"連續 {streak} 步沒有移動，畫面上已是最舊的訊息。擷取完成。"
+                         + ("（警告：一路捲到頂都沒接上上次擷取的畫面）" if self.join else ""))
                 break
             if stuck:
                 self.log(f"連續 {streak} 步捲不動，但 txt 最前面的訊息（例如「{self.oldest[0][:20]}」）還沒出現。"
@@ -405,6 +449,42 @@ class Capture:
     def timing_summary(self, steps):
         parts = "、".join(f"{k} {v / steps:.2f}" for k, v in self.timing.items())
         return f"每步平均秒數：{parts}"
+
+
+def session_dir(workdir, session=None):
+    """第一次擷取在 capture/，更新擷取在 capture/updates/<session>/。"""
+    base = os.path.join(workdir, "capture")
+    return base if not session else os.path.join(base, "updates", session)
+
+
+def sessions(workdir):
+    """各段擷取由新到舊：最新的更新、…、第一次更新、第一次擷取（None）。"""
+    updates = os.path.join(workdir, "capture", "updates")
+    names = sorted((n for n in os.listdir(updates) if os.path.isdir(os.path.join(updates, n))), reverse=True) \
+        if os.path.isdir(updates) else []
+    return names + [None]
+
+
+def first_frame(workdir, session=None):
+    """某一段擷取的第一張（當時最新的畫面）：(影像, Screen)；還沒有時回傳 None。"""
+    cap = Capture(None, workdir, session=session, log=lambda *a: None)
+    steps = cap.load_steps()
+    if not steps:
+        return None
+    step = steps[0]["step"]
+    with open(cap.path(step, "xml"), "rb") as f:
+        return imread(cap.image_path(step)), parse_dump(f.read())
+
+
+def next_update(workdir):
+    """更新擷取要用的段落名稱和要接上的畫面。上一段更新還沒接上也還沒到頂時，接續它。"""
+    names = sessions(workdir)[:-1]
+    if names:
+        last = Capture(None, workdir, session=names[0], log=lambda *a: None).load_steps()
+        if last and last[-1].get("join_dy") is None and not last[-1].get("done"):
+            return names[0], first_frame(workdir, names[1] if len(names) > 1 else None)
+    name = f"{int(names[0]) + 1 if names else 1:03d}"
+    return name, first_frame(workdir, names[0] if names else None)
 
 
 def _lock_owner(lock):

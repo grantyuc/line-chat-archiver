@@ -67,6 +67,23 @@
 
 也可以用 `python main.py run chats/waiting.txt --work work/waiting` 一次做完 2～5。
 
+### 有新訊息時
+
+不必重新擷取，只要補上新的部分：
+
+1. 重新匯出完整的 txt（LINE 匯出的一定是全部記錄），再解析一次，會覆蓋 `chat.json`：
+   ```
+   python main.py parse chats/waiting-new.txt --work work/waiting
+   ```
+2. 手機上打開聊天室、停在最新訊息，執行更新擷取：
+   ```
+   python main.py capture --work work/waiting --update
+   ```
+   一樣從最新的訊息往上捲，畫面接上上次擷取的第一張（當時最新的畫面）就自動停止。存在 `capture/updates/001/`，下次更新是 `002/`，依此類推。中斷後再執行同一個指令會接續同一段。
+3. `python main.py build --work work/waiting` 會把各段由新到舊串起來，和新的 txt 重新對齊，輸出整個網站。`report.txt` 會列出每段更新是否已接上。
+
+也可以一次做完：`python main.py run chats/waiting-new.txt --work work/waiting --update`。
+
 ### 只想先看文字
 
 只執行 `parse` 和 `build`（不 `capture`），網站會有全部文字，貼圖和照片顯示為佔位符。
@@ -92,6 +109,12 @@ python main.py inspect poc/out/t2_media.xml
 
 會列出每一列的位置、類型、左右側、時間、發話者。類型是 `unknown` 的列會列出它的元件 id，方便新增支援；加上 `--tree` 會印出未知列的完整元件樹（不含文字訊息內容）。
 
+印出元件 id 含有某段文字的列的完整元件樹，例如訊息下方的回應（表情）：
+
+```
+python main.py inspect work/waiting/capture/00123.xml --match reaction
+```
+
 找出含有某種訊息的畫面，例如一次傳多張照片的「變更為格狀模式」：
 
 ```
@@ -104,6 +127,7 @@ grep -l "變更為格狀模式" work/waiting/capture/*.xml | head -1
 |---|---|
 | `chat.json` | 解析後的 txt |
 | `capture/` | 每一步的截圖（uiautomator2 為 `00012.jpg`，adb 為 `00012.png`）、dump（`00012.xml`）、`steps.jsonl` |
+| `capture/updates/001/` | 第一次更新擷取（新訊息），結構同上 |
 | `cache/` | 從手機拉回的貼圖快取、照片縮圖與大圖、索引 |
 | `alignment.json` | 每則訊息對到哪一步的哪一列 |
 | `media.json` | 每則訊息的媒體檔與來源 |
