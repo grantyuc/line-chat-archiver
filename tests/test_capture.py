@@ -181,3 +181,41 @@ def test_dump_offset_uses_the_uncut_edge_of_partial_rows():
     cur_ok = parse_dump(hierarchy(LIST, [text_row(278, 1500, "上面新出現的", "08:59", False),
                                          text_row(1600, 2143, "OK", "09:02", True)]))
     assert dump_offset(prev, cur_ok) is None
+
+
+def test_damaged_steps_file_is_still_readable(tmp_path):
+    cap = Capture(None, str(tmp_path), log=lambda *a: None)
+    with open(cap.steps_file, "w", encoding="utf-8") as f:
+        f.write('{"step": 0, "dy": 0, "method": "start"}\n'
+                '{"step": 1, "dy": 900, "method": "image"}{"step": 2, "dy": 880, "method": "image"}\n'   # 少了換行
+                '{"step": 3, "dy": 8\n'                                                                 # 寫到一半
+                '{"step": 3, "dy": 870, "method": "image"}\n'
+                '{"step": 4, "dy": 860, "method": "image"}')                                             # 最後沒換行
+    assert [(s["step"], s["dy"]) for s in cap.load_steps()] == [(0, 0), (1, 900), (2, 880), (3, 870), (4, 860)]
+    cap._save(5, b"\x89PNG", b"<hierarchy/>", {"dy": 850, "method": "image"})
+    assert cap.load_steps()[-1] == {"step": 5, "dy": 850, "method": "image"}
+    with open(cap.steps_file, encoding="utf-8") as f:
+        assert f.read().splitlines()[-1] == '{"step": 5, "dy": 850, "method": "image"}'
+
+
+def test_second_capture_on_the_same_workdir_is_refused(tmp_path):
+    import subprocess
+    import sys
+
+    import pytest
+
+    from archiver.capture import CaptureError
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        cap = Capture(None, str(tmp_path), log=lambda *a: None)
+        with open(os.path.join(cap.dir, "capture.lock"), "w") as f:
+            f.write(str(other.pid))
+        with pytest.raises(CaptureError, match=str(other.pid)):
+            cap.run()
+    finally:
+        other.kill()
+        other.wait()
+    # 那個程式結束後，鎖檔就失效了
+    _, items = make_chat(days=1)
+    cap, steps = run_capture(tmp_path, FakeChat(items, fast=True))
+    assert steps[-1]["done"] and not os.path.exists(os.path.join(cap.dir, "capture.lock"))

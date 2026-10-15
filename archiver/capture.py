@@ -117,18 +117,45 @@ class Capture:
         return os.path.join(self.dir, "steps.jsonl")
 
     def load_steps(self):
+        """讀 steps.jsonl。中斷時可能留下寫到一半、或少了換行而和下一筆黏在一起的紀錄，
+        都要讀得過去；同一步有兩筆時取後寫的那筆。"""
         if not os.path.exists(self.steps_file):
             return []
         with open(self.steps_file, encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+            text = f.read()
+        decoder, by_step, pos, skipped = json.JSONDecoder(), {}, 0, []
+        while True:
+            pos = text.find("{", pos)
+            if pos < 0:
+                break
+            try:
+                record, end = decoder.raw_decode(text, pos)
+            except json.JSONDecodeError:
+                end = text.find("{", pos + 1)
+                skipped.append(text[pos:end if end >= 0 else len(text)].strip()[:80])
+                if end < 0:
+                    break
+                pos = end
+                continue
+            if isinstance(record, dict) and isinstance(record.get("step"), int):
+                by_step[record["step"]] = record
+            pos = end
+        for s in skipped:
+            self.log(f"steps.jsonl 有一筆不完整的紀錄，已略過：{s!r}")
+        return [by_step[k] for k in sorted(by_step)]
 
     def _save(self, step, image, xml, record):
         with open(self.path(step, "jpg" if image[:2] == b"\xff\xd8" else "png"), "wb") as f:
             f.write(image)
         with open(self.path(step, "xml"), "wb") as f:
             f.write(xml)
-        with open(self.steps_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"step": step, **record}, ensure_ascii=False) + "\n")
+        line = json.dumps({"step": step, **record}, ensure_ascii=False) + "\n"
+        with open(self.steps_file, "a+b") as f:
+            if f.tell():                        # 上一筆少了換行（中斷時寫到一半）：先補上
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    line = "\n" + line
+            f.write(line.encode("utf-8"))
 
     def done(self):
         steps = self.load_steps()
@@ -217,6 +244,20 @@ class Capture:
 
     # ---- 主流程 ----
     def run(self):
+        """擷取到最舊的訊息或 max_steps 為止。同一個工作目錄同時只能有一個擷取在跑。"""
+        lock = os.path.join(self.dir, "capture.lock")
+        other = _lock_owner(lock)
+        if other:
+            raise CaptureError(f"另一個擷取程式（PID {other}）正在使用 {self.dir}。請先結束它（Ctrl+C），再執行一次。")
+        with open(lock, "w") as f:
+            f.write(str(os.getpid()))
+        try:
+            return self._run()
+        finally:
+            if os.path.exists(lock):
+                os.remove(lock)
+
+    def _run(self):
         steps = self.load_steps()
         if steps and steps[-1].get("done"):
             self.log("上次已判定捲到最舊的訊息；再試著往上捲，確認真的到頂。要整個重新擷取，請刪除 capture 目錄。")
@@ -310,6 +351,24 @@ class Capture:
     def timing_summary(self, steps):
         parts = "、".join(f"{k} {v / steps:.2f}" for k, v in self.timing.items())
         return f"每步平均秒數：{parts}"
+
+
+def _lock_owner(lock):
+    """鎖檔記錄的程式還在跑的話回傳它的 PID，否則回傳 None（舊的鎖檔視為已失效）。"""
+    try:
+        with open(lock) as f:
+            pid = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return None
+    if not pid or pid == os.getpid() or os.name != "posix":    # Windows 上無法安全地檢查
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
 
 
 def image_path(capture_dir, step):
