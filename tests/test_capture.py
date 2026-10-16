@@ -263,3 +263,31 @@ def test_max_steps_limits_each_run_not_the_total(tmp_path):
     assert len(steps) == 4 + 1 + 3 and device.offset > 0
     _, steps = run_capture(tmp_path, device)
     assert steps[-1]["done"] and device.offset == 0
+
+
+def test_message_taller_than_the_screen_is_kept_once(tmp_path):
+    _, items = make_chat(days=3, seed=6)
+    texts = [i for i, it in enumerate(items) if it["kind"] == "text"]
+    long_one = items[texts[len(texts) // 2]]
+    long_one["text"], long_one["height"] = "很長的一則訊息" * 20, 2400       # 比聊天區（1865px）還高
+    for fast in (True, False):
+        device = FakeChat(items, fast=fast)
+        cap, steps = run_capture(tmp_path / str(fast), device)
+        screens, offsets = load(cap, steps)
+        uniques, warnings = stitch(screens, offsets)
+        assert warnings == [] and got(uniques) == expected(items)
+        assert sum(1 for u in uniques if u.row.text == long_one["text"]) == 1
+
+
+def test_stitch_row_cut_at_both_ends():
+    from tests.xmlgen import hierarchy, text_row
+    LIST = (0, 278, 1080, 2143)
+    long_text = "很長的一則訊息" * 30
+    # 兩步之間捲了 900px；長訊息兩次都上下被裁掉，第三步才露出上緣
+    a = parse_dump(hierarchy(LIST, [text_row(278, 2143, long_text, "09:00", False)]))
+    b = parse_dump(hierarchy(LIST, [text_row(278, 2143, long_text, "09:00", False)]))
+    c = parse_dump(hierarchy(LIST, [text_row(278, 400, "更早", "08:59", False),
+                                    text_row(420, 2143, long_text, "09:00", False)]))
+    uniques, warnings = stitch([a, b, c], [0, 900, 900])
+    assert warnings == []
+    assert [u.row.text for u in uniques] == ["更早", long_text]

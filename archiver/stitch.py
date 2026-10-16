@@ -5,7 +5,8 @@
 所以只拿上一步的列來比對，累計誤差不會影響去重。
 
 部分在畫面外的列，dump 的範圍會被裁掉、也可能少了時間或文字，
-所以只比對沒被裁掉的那一邊，以及雙方都有的欄位。
+所以只比對沒被裁掉的那一邊，以及雙方都有的欄位。兩次觀察沒有共同的完整邊時
+（例如比畫面還高、上下都被裁掉的長文字訊息），改看露出來的部分有沒有重疊。
 """
 from dataclasses import dataclass, field
 
@@ -20,11 +21,14 @@ class Unique:
     gy1: float = None           # 上緣（整段對話座標）；被裁掉時為 None
     gy2: float = None
     frames: list = field(default_factory=list)
+    seen: tuple = None          # 最近一次露出來的範圍（整段對話座標）
 
     def key(self):
         if self.gy1 is not None:
             return self.gy1
-        return self.gy2 - (self.row.bounds[3] - self.row.bounds[1])
+        if self.gy2 is not None:
+            return self.gy2 - (self.row.bounds[3] - self.row.bounds[1])
+        return self.seen[0]     # 上下都被裁掉：真正的上緣在露出來的部分之上，排序時用它即可
 
 
 def compatible(a, b):
@@ -72,6 +76,7 @@ def stitch(screens, offsets):
             bottom_cut = row.bounds[3] >= bottom - 1
             gy1 = None if top_cut else row.bounds[1] - shift
             gy2 = None if bottom_cut else row.bounds[3] - shift
+            seen = (row.bounds[1] - shift, row.bounds[3] - shift)
             match, best_gap = None, TOLERANCE + 1
             for u in prev:
                 if u in current or not compatible(u.row, row):
@@ -81,11 +86,14 @@ def stitch(screens, offsets):
                     gaps.append(abs(gy1 - u.gy1))
                 if gy2 is not None and u.gy2 is not None:
                     gaps.append(abs(gy2 - u.gy2))
+                overlap = min(seen[1], u.seen[1]) - max(seen[0], u.seen[0])
+                if not gaps and overlap > TOLERANCE and (row.kind != "text" or row.text):
+                    gaps.append(TOLERANCE)  # 沒有共同的邊：露出來的部分重疊（文字列的文字已由 compatible 確認相同）
                 if gaps and min(gaps) < best_gap:
                     match, best_gap = u, min(gaps)
             room = min(row.bounds[1] - top, bottom - row.bounds[3])
             if match is None:
-                match = Unique(row, k, room, gy1, gy2)
+                match = Unique(row, k, room, gy1, gy2, seen=seen)
                 uniques.append(match)
             else:
                 if better(row, match.row, room, match.room):
@@ -94,6 +102,7 @@ def stitch(screens, offsets):
                     match.gy1 = gy1
                 if match.gy2 is None and gy2 is not None:
                     match.gy2 = gy2
+                match.seen = seen
             match.frames.append(k)
             current.append(match)
         prev = current
