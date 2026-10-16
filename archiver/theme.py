@@ -18,7 +18,8 @@ def sample_theme(screens, paths, samples=30):
     """回傳 CSS 變數 {名稱: 顏色}；取樣不到的省略，全部取樣不到時回傳 {}。
 
     - 背景：聊天區最右緣的一條（自己的泡泡離右緣還有一段距離），避開底端的按鈕。
-    - 泡泡：完整的文字訊息，泡泡左緣內側一小塊（文字從更裡面才開始）。
+    - 泡泡：完整的文字訊息，泡泡內側邊緣的一小塊（文字從更裡面才開始）。外側邊緣有 14px 是放尾巴的
+      地方，泡泡中段那裡是透明的（看到的是背景），所以對方的泡泡取右緣、自己的泡泡取左緣。
     """
     picks = sorted({round(i * (len(paths) - 1) / max(1, samples - 1)) for i in range(samples)}) if paths else []
     bg, mine, theirs = [], [], []
@@ -37,7 +38,8 @@ def sample_theme(screens, paths, samples=30):
                 continue
             x1, y1, x2, y2 = r.content
             mid = (y1 + y2) // 2
-            patch = img[max(0, mid - 6):mid + 6, x1 + 4:x1 + 12]
+            inner = (x1 + 4, x1 + 12) if r.side == "self" else (x2 - 12, x2 - 4)
+            patch = img[max(0, mid - 6):mid + 6, inner[0]:inner[1]]
             if patch.size and x2 - x1 > 40 and y2 - y1 > 40:
                 (mine if r.side == "self" else theirs).append(np.median(patch.reshape(-1, 3), axis=0))
     theme = {}

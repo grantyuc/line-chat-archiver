@@ -296,10 +296,16 @@ class FakeChat:
                 continue
             x1, x2 = self._x_span(it)
             if it["kind"] == "text":
+                # 和實機一樣：外側 14px 只有頂端畫尾巴，其餘透明；文字留在泡泡裡（左右各留 16px）
                 color = (140, 230, 150) if it.get("self") else (255, 255, 255)
-                cv2.rectangle(canvas, (x1, y1), (x2, y2), color, -1)
+                bx1, bx2, tail = (x1, x2 - 14, x2) if it.get("self") else (x1 + 14, x2, x1)
+                inner = np.full((y2 - y1, max(1, bx2 - bx1 - 32), 3), color, np.uint8)
                 label = hashlib.md5(it["text"].encode()).hexdigest()[:12]
-                cv2.putText(canvas, label, (x1 + 20, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
+                cv2.putText(inner, label, (4, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
+                cv2.rectangle(canvas, (bx1, y1), (bx2, y2), color, -1)
+                canvas[y1:y2, bx1 + 16:bx1 + 16 + inner.shape[1]] = inner
+                corner = bx2 if it.get("self") else bx1
+                cv2.fillPoly(canvas, [np.array([(corner, y1), (tail, y1), (corner, y1 + 30)])], color)
             elif it["kind"] == "sticker":
                 canvas[y1:y2, x1:x2] = composite(it["sticker_bgra"], canvas[y1:y2, x1:x2])
                 if it.get("custom_text"):            # 訊息貼圖：使用者輸入的文字畫在貼圖上

@@ -29,8 +29,10 @@ def h12(hhmm):
 
 def text_row(y1, y2, text, hhmm, self_side, sender="", width=1080, x_span=None):
     x1, x2 = x_span or ((width - 300, width - 21) if self_side else (114, 500))
+    # 實機：外側 14px 是泡泡的尾巴，文字框貼著內側
+    tx1, tx2 = (x1 + 1, x2 - 14) if self_side else (x1 + 14, x2 - 1)
     kids = [node("chat_ui_row_text_message", "android.widget.LinearLayout", (x1, y1, x2, y2), desc=text,
-                 children=[node("chat_ui_message_text", "android.widget.TextView", (x1 + 14, y1 + 13, x2 - 14, y2 - 13), text=text)])]
+                 children=[node("chat_ui_message_text", "android.widget.TextView", (tx1, y1 + 13, tx2, y2 - 13), text=text)])]
     ts = (x1 - 110, y2 - 48, x1 - 7, y2 - 11) if self_side else (x2 + 13, y2 - 48, x2 + 116, y2 - 11)
     kids.append(node("chat_ui_row_timestamp", "android.widget.TextView", ts, text=h12(hhmm)))
     if self_side:
