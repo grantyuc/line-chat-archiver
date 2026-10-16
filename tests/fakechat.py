@@ -294,6 +294,9 @@ class FakeChat:
                 cv2.putText(canvas, label, (x1 + 20, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
             elif it["kind"] == "sticker":
                 canvas[y1:y2, x1:x2] = composite(it["sticker_bgra"], canvas[y1:y2, x1:x2])
+                if it.get("custom_text"):            # 訊息貼圖：使用者輸入的文字畫在貼圖上
+                    cv2.putText(canvas, it["custom_text"], (x1 + 30, y1 + 200), cv2.FONT_HERSHEY_SIMPLEX, 2.2,
+                                (20, 20, 20), 7)
             elif it["kind"] == "voice":
                 cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 255), -1)
                 cv2.putText(canvas, f"{it['seconds']}s #{it['idx']}", (x1 + 90, y1 + 62), cv2.FONT_HERSHEY_SIMPLEX,
@@ -319,7 +322,8 @@ class FakeChat:
                                              sender=it.get("sender", "") if it["avatar"] else ""))
             elif it["kind"] == "text":
                 rows.append(xmlgen.text_row(y1, y2, it["text"], it["time"], it.get("self"),
-                                            sender=it.get("sender", "") if it["avatar"] else ""))
+                                            sender=it.get("sender", "") if it["avatar"] else "",
+                                            x_span=self._x_span(it)))
             elif it["kind"] == "voice":
                 rows.append(xmlgen.voice_row(y1, y2, it["seconds"], it["time"], it.get("self"),
                                              sender=it.get("sender", "") if it["avatar"] else ""))

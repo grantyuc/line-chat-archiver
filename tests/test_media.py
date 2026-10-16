@@ -304,3 +304,32 @@ def test_voice_order_is_checked_against_lengths():
     # 數量一樣，但第一則的檔案不在、多了一個別的檔：長度不合就不照順序硬配
     got = assign_voices([3, 8], {}, [490, 520], seconds={3: 10, 8: 40}, file_seconds={490: 55.0, 520: 40.2})
     assert got == {8: 520}
+
+
+def test_sticker_with_typed_text_uses_the_screenshot(tmp_path):
+    txt, items = make_chat(days=3, per_day=25, seed=11)
+    chat = parse(txt)
+    stickers = [it for it in items if it["kind"] == "sticker"]
+    stickers[1]["custom_text"] = "HELLO"                  # 這一張是訊息貼圖，上面有自己輸入的字
+    device = FakeChat(items)
+    work, data = capture_and_resolve(tmp_path, chat, device)
+    msg_items = [it for it in device.items if it["kind"] != "date"]
+    sources = {}
+    for msg, it in zip(chat.messages, msg_items):
+        if it["kind"] == "sticker":
+            sources[bool(it.get("custom_text"))] = sources.get(bool(it.get("custom_text")), []) + \
+                [data["media"][str(msg.idx)][0]["source"]]
+    assert sources[True] == ["custom"]
+    assert set(sources[False]) == {"cache"}
+
+
+def test_animated_webp_is_detected(tmp_path):
+    from PIL import Image
+
+    from archiver.imgio import is_animated, sniff
+    frames = [Image.new("RGB", (40, 30), (i * 40, 0, 0)) for i in range(3)]
+    moving, still = str(tmp_path / "a.webp"), str(tmp_path / "s.webp")
+    frames[0].save(moving, save_all=True, append_images=frames[1:], duration=100, loop=0)
+    frames[0].save(still)
+    assert sniff(moving) == sniff(still) == "webp"
+    assert is_animated(moving, "webp") and not is_animated(still, "webp")

@@ -20,6 +20,21 @@ def imwrite(path, img, ext=None):
     return ok
 
 
+def is_animated(path, kind):
+    """GIF、APNG 一律當成動圖；WebP 看檔頭有沒有動畫（ANIM 區塊）。"""
+    if kind in ("gif", "apng"):
+        return True
+    if kind != "webp":
+        return False
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return False
+    # VP8X 區塊第一個位元組的第 2 位元是動畫旗標；後面跟著 ANIM 區塊
+    return head[12:16] == b"VP8X" and bool(head[20] & 0x02) or b"ANIM" in head
+
+
 def sniff(path):
     """依檔頭判斷格式：jpg/png/apng/webp/gif/mp4/aac；不認得時回傳空字串。"""
     try:

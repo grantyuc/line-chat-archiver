@@ -40,6 +40,27 @@ def cmd_parse(args):
     print("類型：" + "、".join(f"{k} {v}" for k, v in kinds.most_common()))
 
 
+def cmd_find(args):
+    """找出含有某段文字（或某一天）的訊息，以及它對到哪一步的畫面，方便用 inspect 查看。"""
+    import json
+    chat = load_chat(args.work)
+    aligned = {}
+    path = os.path.join(args.work, "alignment.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            aligned = {a["msg"]: a for a in json.load(f)}
+    else:
+        print("還沒有 alignment.json：請先執行 build。")
+    date = args.text.replace("/", "-")
+    hits = [m for m in chat.messages if args.text in m.body or m.date == date or m.date.startswith(date + "-")]
+    for m in hits[:args.limit]:
+        a = aligned.get(m.idx) or {}
+        where = (f"{a['where']}（{a['row_kind']}）：python main.py inspect {os.path.join(args.work, a['xml'])} --tree"
+                 if a.get("xml") else "畫面上沒對到")
+        print(f"{m.date} {m.time} {m.sender} {m.kind} {m.body[:30]!r}\n    {where}")
+    print(f"共 {len(hits)} 則" + (f"，只列出前 {args.limit} 則" if len(hits) > args.limit else ""))
+
+
 def cmd_inspect(args):
     with open(args.xml, "rb") as f:
         data = f.read()
@@ -177,6 +198,11 @@ def main():
     capture_opts(p)
     build_opts(p)
     p.set_defaults(func=cmd_run)
+    p = sub.add_parser("find", help="找出含有某段文字或某一天的訊息，以及它在哪一步的畫面")
+    p.add_argument("text", help="文字，或日期（例如 2025/5/22）")
+    p.add_argument("--work", required=True, help="工作目錄")
+    p.add_argument("--limit", type=int, default=20, help="最多列出幾則（預設 20）")
+    p.set_defaults(func=cmd_find)
     p = sub.add_parser("inspect", help="檢查一份 uiautomator dump")
     p.add_argument("xml")
     p.add_argument("--tree", action="store_true", help="另外印出未知列的完整元件樹")

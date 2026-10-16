@@ -251,3 +251,34 @@ def test_voice_message_has_a_player(tmp_path):
     site = render(str(tmp_path), chat, media, log=lambda *a: None)
     page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
     assert '<audio controls preload="none" src="media/voice/1.aac">' in page
+
+
+def test_site_uses_colors_from_the_screenshots_and_rechecks_kinds(tmp_path):
+    import json
+    import subprocess
+    import sys
+    work = str(tmp_path / "theme")
+    txt, items = make_chat(days=2, per_day=20, seed=5)
+    chat = parse(txt)
+    chat.messages[3].body, chat.messages[3].kind = "威廷已建立記事本。", "text"     # 舊版 parse 存成 text
+    save_chat(work, chat)
+    device = FakeChat(items, fast=True)
+    Capture(device, work, idle_wait=0, log=lambda *a: None).run()
+    site = build(work, device=device, log=lambda *a: None)
+    css = open(os.path.join(site, "assets", "theme.css"), encoding="utf-8").read()
+    # 模擬手機：背景 BGR (231,236,240)、自己的泡泡 (140,230,150)、對方的泡泡白色（截圖是 JPEG，容許一點誤差）
+    import re
+    colors = dict(re.findall(r"(--[a-z-]+): #([0-9a-f]{6})", css))
+    near = lambda name, rgb: all(abs(int(colors[name][i * 2:i * 2 + 2], 16) - c) <= 4 for i, c in enumerate(rgb))
+    assert near("--bg", (240, 236, 231)) and near("--self", (150, 230, 140)) and near("--other", (255, 255, 255))
+    assert 'data-theme="dark"' in css                      # 只套用在淺色模式
+    page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
+    assert 'href="assets/theme.css"' in page and 'class="theme"' in page and 'id="d2026-09-01"' in page
+    assert "window.DAY_INDEX" in open(os.path.join(site, "assets", "search-index.js"), encoding="utf-8").read()
+    aligned = {a["msg"]: a for a in json.load(open(os.path.join(work, "alignment.json"), encoding="utf-8"))}
+    assert all(a["xml"] and os.path.exists(os.path.join(work, a["xml"])) for a in aligned.values() if a["row"] is not None)
+
+    word = next(m.body for m in chat.messages if m.body.startswith("第"))
+    out = subprocess.run([sys.executable, "main.py", "find", word, "--work", work],
+                         capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__))).stdout
+    assert "main.py inspect" in out and "capture" in out

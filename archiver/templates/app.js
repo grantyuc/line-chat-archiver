@@ -2,6 +2,21 @@
 (function () {
   "use strict";
 
+  // ---- 深色／淺色：標題列的按鈕切換，記在瀏覽器裡（深色在 <head> 裡就先套用，避免閃爍） ----
+  document.querySelectorAll("header.bar .theme").forEach((button) => {
+    const label = () => {
+      button.textContent = document.documentElement.dataset.theme === "dark" ? "☀️" : "🌙";
+    };
+    button.addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme !== "dark";
+      if (dark) document.documentElement.dataset.theme = "dark";
+      else delete document.documentElement.dataset.theme;
+      try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) { /* 無法儲存時只影響這一頁 */ }
+      label();
+    });
+    label();
+  });
+
   // ---- 燈箱：點照片放大，左右鍵切換，Esc 關閉；燈箱裡再點照片可以放大／縮回 ----
   const photos = Array.from(document.querySelectorAll("a.photo"));
   if (photos.length) {
@@ -147,12 +162,41 @@
   const input = document.querySelector("#q");
   const results = document.querySelector("#results");
   const index = window.SEARCH_INDEX || [];
+  const days = window.DAY_INDEX || [];          // [日期, 頁面]，由舊到新
+  // 日期：2024/7/2、2024-07-02、2024.7.2、2024年7月2日；只寫到月（2024/7）就跳到那個月的第一天
+  const dateQuery = (s) => {
+    let m = s.match(/^(\d{4})\s*[\/\-.年]\s*(\d{1,2})\s*[\/\-.月]\s*(\d{1,2})\s*日?$/);
+    if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+    m = s.match(/^(\d{4})\s*[\/\-.年]\s*(\d{1,2})\s*月?$/);
+    return m ? { y: +m[1], m: +m[2], d: 0 } : null;
+  };
+  const pad = (n) => String(n).padStart(2, "0");
+  const dateHit = (s) => {
+    const q = dateQuery(s);
+    if (!q || q.m < 1 || q.m > 12 || q.d > 31) return null;
+    const key = q.y + "-" + pad(q.m) + "-" + pad(q.d || 1);
+    const found = days.find(([day]) => day >= key);
+    if (!found) return { text: "📅 " + s + " 之後沒有訊息" };
+    const [day, page] = found;
+    const shown = day.split("-").map(Number).join("/");
+    const exact = q.d ? day === key : day.slice(0, 7) === key.slice(0, 7);
+    return { href: page + "#d" + day,
+             text: exact ? "📅 跳到 " + shown : "📅 " + s + " 沒有訊息，跳到之後最近的 " + shown };
+  };
   if (input && results) {
     const escape = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const render = () => {
       const term = input.value.trim().toLowerCase();
       results.innerHTML = "";
       if (!term) return;
+      const date = dateHit(input.value.trim());
+      if (date) {
+        const a = document.createElement(date.href ? "a" : "p");
+        a.className = date.href ? "hit date" : "summary";
+        if (date.href) a.href = date.href;
+        a.textContent = date.text;
+        results.appendChild(a);
+      }
       let count = 0;
       const frag = document.createDocumentFragment();
       for (const [page, id, date, time, sender, text] of index) {
@@ -172,7 +216,7 @@
       const head = document.createElement("p");
       head.className = "summary";
       head.textContent = count ? `找到 ${count} 則${count > 300 ? "（只列出前 300 則）" : ""}` : "沒有找到";
-      results.appendChild(head);
+      if (count || !date) results.appendChild(head);
       results.appendChild(frag);
     };
     // 把關鍵字寫進網址：從訊息頁按「上一頁」或「返回搜尋結果」回來時，結果還在

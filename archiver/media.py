@@ -21,9 +21,10 @@ import cv2
 import numpy as np
 
 from .capture import image_path
-from .imgio import imread, imwrite, sniff
+from .imgio import imread, imwrite, is_animated, sniff
 from .imgmatch import SAME_PHOTO, features, score, similarity
 
+CUSTOM_STICKER = 0.03   # 截圖比快取的貼圖多出這麼多內容，就當成訊息貼圖／拼拼樂，改用截圖
 NEARBY_PHOTO = 0.65     # 依編號限定候選時的門檻（見 PhotoLibrary.match_nearby）
 NEARBY_MARGIN = 0.3     # 而且要比第二高的候選高出這麼多
 LINE_FILES = "/sdcard/Android/data/jp.naver.line.android/files"
@@ -386,8 +387,29 @@ class StickerLibrary:
         denom = float(np.sqrt((a * a).sum() * (b * b).sum()))
         return (float((a * b).sum() / denom) if denom else 0.0), mae
 
+    @staticmethod
+    def extra_content(bgra, image):
+        """截圖比快取的貼圖多出來的內容（0～1）：例如訊息貼圖上自己輸入的文字。
+
+        看兩處：貼圖不透明的地方顏色差很多的比例；以及貼圖透明的地方（應該只看得到聊天背景）
+        和背景差很多的比例。取較大者。一般的貼圖對到之後兩者都接近 0。
+        """
+        alpha = bgra[:, :, 3]
+        solid = cv2.erode((alpha > 230).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        clear = cv2.erode((alpha < 25).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+        a = cv2.GaussianBlur(bgra[:, :, :3], (3, 3), 0).astype(np.int16)
+        b = cv2.GaussianBlur(image, (3, 3), 0).astype(np.int16)
+        parts = []
+        if solid.sum() > 200:
+            parts.append(float((np.abs(a - b).max(axis=2)[solid] > 60).mean()))
+        if clear.sum() > 200:
+            ring = np.concatenate([image[0], image[-1], image[:, 0], image[:, -1]]).astype(np.int16)
+            background = np.median(ring, axis=0)
+            parts.append(float((np.abs(b - background).max(axis=2)[clear] > 80).mean()))
+        return max(parts) if parts else 0.0
+
     def lookup(self, image, candidates=24):
-        """回傳 (貼圖ID, 相關係數)；找不到時回傳 None。
+        """回傳 (貼圖ID, 相關係數, 多出來的內容比例)；找不到時回傳 None。
 
         LINE 把整張貼圖畫布（含透明邊）縮放到貼圖元件的範圍，所以把候選貼圖縮放到截圖大小，
         只比對不透明的像素。背景有花紋、或截到動畫的其他影格，都不影響。
@@ -405,7 +427,7 @@ class StickerLibrary:
         var_c = self.weight[ok] @ (c * c) - mean_c ** 2
         coarse = cov / np.sqrt(np.maximum(var_c * self.var_g[ok], 1e-6))
         index = np.nonzero(ok)[0]
-        tried, best = [], None            # best = (色差, 相關係數, 貼圖ID)
+        tried, best = [], None            # best = (色差, 相關係數, 貼圖ID, 影格)
         for i in index[np.argsort(-coarse)]:
             sid = self.ids[self.owner[i]]
             if sid in tried:
@@ -418,12 +440,27 @@ class StickerLibrary:
                     bgra = cv2.resize(bgra, (w, h), interpolation=cv2.INTER_AREA)
                     ncc, mae = self.compare(bgra[:, :, :3], bgra[:, :, 3] / 255, image)
                     if ncc >= 0.9 and mae <= 8:
-                        return sid, ncc                     # 非常確定，不用再看其他候選
+                        return sid, ncc, self._extra(sid, bgra, image)     # 非常確定，不用再看其他候選
                     if ncc >= 0.85 and mae <= 15 and (best is None or mae < best[0]):
-                        best = (mae, ncc, sid)
+                        best = (mae, ncc, sid, bgra)
             if len(tried) >= candidates:
                 break
-        return (best[2], best[1]) if best else None
+        return (best[2], best[1], self._extra(best[2], best[3], image)) if best else None
+
+    def _extra(self, sid, bgra, image):
+        """對到的貼圖和截圖相比多出來的內容。動態貼圖對到的不一定是截圖那一格，
+        多出來的看起來不少時，再和這張貼圖的每一格比，取最小的。"""
+        extra = self.extra_content(bgra, image)
+        if extra <= CUSTOM_STICKER:
+            return extra
+        h, w = image.shape[:2]
+        entry = self.entries[sid]
+        for key, limit in (("static", 1), ("ani", self.MAX_FRAMES)):
+            for _, frame in self._frames(entry[key], limit) if key in entry else []:
+                extra = min(extra, self.extra_content(cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA), image))
+                if extra <= CUSTOM_STICKER:
+                    return extra
+        return extra
 
 
 # ---------------------------------------------------------------- 整合 ----
@@ -628,7 +665,7 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
             shutil.copyfile(path, os.path.join(site, full_rel))
         item = {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
                 "source": variant, "number": number}
-        if kind in ("gif", "apng") or (kind == "mp4" and photo):
+        if is_animated(path, kind) or (kind == "mp4" and photo):
             item["anim"] = True
         return item
 
@@ -647,7 +684,10 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         item = None
         if msg.kind == "sticker" and sticker_lib:
             hit = sticker_lib.lookup(image)
-            if hit:
+            if hit and hit[2] > CUSTOM_STICKER:
+                # 訊息貼圖（自己輸入的文字）、貼圖拼拼樂：快取裡只有底圖，用截圖才看得到全部
+                item = {"type": "sticker", "src": save_crop(f"{msg.idx}_{slot[1]}", image), "source": "custom"}
+            elif hit:
                 entry = sticker_lib.entries[hit[0]]
                 src = entry.get("ani") or entry["static"]
                 rel = f"media/stickers/{entry['pkg']}_{hit[0]}.png"

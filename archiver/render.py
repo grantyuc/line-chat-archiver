@@ -13,6 +13,8 @@ import re
 import shutil
 from collections import OrderedDict
 
+from .theme import theme_css
+
 TEMPLATES = os.path.join(os.path.dirname(__file__), "templates")
 WEEK = "一二三四五六日"
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
@@ -117,17 +119,25 @@ def _message_html(msg, media, avatar, show_head):
             f'<div class="line">{content}{t}</div></div></div>')
 
 
+THEME_BUTTON = '<button class="theme" type="button" title="切換深色／淺色">🌙</button>'
+# 在顯示前就套用上次選的深色，避免先閃一下淺色
+THEME_INIT = ('<script>try{if(localStorage.getItem("theme")==="dark")'
+              'document.documentElement.setAttribute("data-theme","dark")}catch(e){}</script>')
+
+
 def _page(title, body, extra_head=""):
     return ("<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            f"<title>{html.escape(title)}</title><link rel=\"stylesheet\" href=\"assets/style.css\">{extra_head}"
+            f"<title>{html.escape(title)}</title><link rel=\"stylesheet\" href=\"assets/style.css\">"
+            f"<link rel=\"stylesheet\" href=\"assets/theme.css\">{THEME_INIT}{extra_head}"
             f"</head><body>{body}<script src=\"assets/app.js\"></script></body></html>\n")
 
 
-def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, log=print):
+def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, theme=None, log=print):
     """輸出到 <工作目錄>/site/。media 為 media.resolve 的結果（可為 None）；
     notices 為 {訊息索引: [置中通知文字]}，插在該則訊息之後（例如收回通知）；
-    page_min：訊息少於這麼多則的月份和相鄰月份合併成一頁（0 為每月一頁）。"""
+    page_min：訊息少於這麼多則的月份和相鄰月份合併成一頁（0 為每月一頁）；
+    theme：從截圖取樣的配色（theme.sample_theme），淺色模式使用。"""
     site = os.path.join(workdir, "site")
     os.makedirs(os.path.join(site, "assets"), exist_ok=True)
     for name in os.listdir(site):                      # 上次輸出的分頁可能和這次分法不同
@@ -135,6 +145,8 @@ def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, log=print
             os.remove(os.path.join(site, name))
     for name in ("style.css", "app.js"):
         shutil.copyfile(os.path.join(TEMPLATES, name), os.path.join(site, "assets", name))
+    with open(os.path.join(site, "assets", "theme.css"), "w", encoding="utf-8") as f:
+        f.write(theme_css(theme))
     media = media or {"media": {}, "avatars": {}}
     by_msg = media.get("media", {})
     avatars = media.get("avatars", {})
@@ -146,13 +158,15 @@ def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, log=print
     groups = group_months([(m, len(v)) for m, v in months.items()], page_min)
     pages = [(page_name(g), page_label(g), [msg for m in g for msg in months[m]]) for g in groups]
 
-    search = []
+    search, days = [], []
     for k, (name, label, msgs) in enumerate(pages):
         out, last_date, last_key = [], None, None
         for msg in msgs:
             if msg.date != last_date:
                 y, m, d = msg.date.split("-")
-                out.append(f'<div class="day"><span>{int(y)}/{int(m)}/{int(d)}（週{weekday(msg.date)}）</span></div>')
+                out.append(f'<div class="day" id="d{msg.date}"><span>{int(y)}/{int(m)}/{int(d)}'
+                           f'（週{weekday(msg.date)}）</span></div>')
+                days.append([msg.date, name])
                 last_date, last_key = msg.date, None
             key = (msg.sender, msg.is_self)
             show_head = key != last_key
@@ -166,19 +180,21 @@ def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, log=print
         prev_link = f'<a href="{pages[k - 1][0]}">‹ {pages[k - 1][1]}</a>' if k > 0 else "<span></span>"
         next_link = f'<a href="{pages[k + 1][0]}">{pages[k + 1][1]} ›</a>' if k + 1 < len(pages) else "<span></span>"
         body = (f'<header class="bar"><a href="index.html">☰ 目錄</a><h1>{html.escape(title)}　{label}</h1>'
-                f'<a href="index.html">🔍 搜尋</a></header>'
+                f'{THEME_BUTTON}<a href="index.html">🔍 搜尋</a></header>'
                 f'<main class="chat">{"".join(out)}</main><nav class="pager">{prev_link}{next_link}</nav>')
         with open(os.path.join(site, name), "w", encoding="utf-8") as f:
             f.write(_page(f"{title} {label}", body))
 
     with open(os.path.join(site, "assets", "search-index.js"), "w", encoding="utf-8") as f:
         f.write("window.SEARCH_INDEX = " + json.dumps(search, ensure_ascii=False) + ";\n")
+        f.write("window.DAY_INDEX = " + json.dumps(days) + ";\n")             # 跳到某一天用
 
     cards = "".join(f'<a href="{name}">{label}<small>{len(msgs)} 則</small></a>' for name, label, msgs in pages)
     first, last = (chat.messages[0].date, chat.messages[-1].date) if chat.messages else ("", "")
-    body = (f'<header class="bar"><h1>{html.escape(title)}</h1></header><main>'
+    body = (f'<header class="bar"><h1>{html.escape(title)}</h1>{THEME_BUTTON}</header><main>'
             f'<p class="summary">{first} ～ {last}，共 {len(chat.messages)} 則訊息</p>'
-            '<div class="search"><input id="q" type="search" placeholder="搜尋全部訊息" autocomplete="off"></div>'
+            '<div class="search"><input id="q" type="search" placeholder="搜尋全部訊息，或輸入日期（例如 2024/7/2）"'
+            ' autocomplete="off"></div>'
             f'<div id="results" class="results"></div><div class="months">{cards}</div></main>')
     with open(os.path.join(site, "index.html"), "w", encoding="utf-8") as f:
         f.write(_page(title, body, '<script src="assets/search-index.js"></script>'))

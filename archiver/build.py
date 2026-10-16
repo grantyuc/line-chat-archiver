@@ -13,7 +13,8 @@ from .media import expand_albums, resolve
 from .render import PAGE_MIN, render
 from .screen import parse_dump
 from .stitch import stitch
-from .txt_parser import Chat, set_me
+from .theme import sample_theme
+from .txt_parser import Chat, classify, set_me
 
 
 def chat_path(workdir):
@@ -122,6 +123,12 @@ def recover_offsets(steps, screens, paths, window=10):
     return offsets, notes
 
 
+def dump_path(workdir, step):
+    """這一步的 dump 檔，相對於工作目錄（給 inspect 用）。"""
+    cap = Capture(None, workdir, session=step.get("session"), log=lambda *a: None)
+    return os.path.relpath(cap.path(step["step"], "xml"), workdir)
+
+
 def step_label(step):
     """「第 123 步」或「更新 001 第 12 步」，用來在 capture 目錄裡找到那張畫面。"""
     session = step.get("session")
@@ -160,9 +167,11 @@ def media_summary(chat, media):
                 got["依編號推斷"] += 1
             elif items[0]["source"] == "screenshot":
                 got["截圖裁切"] += 1
+            elif items[0]["source"] == "custom":
+                got["訊息貼圖或拼拼樂（用截圖）"] += 1
             else:
                 got["快取"] += 1
-        order = ("快取", "依編號推斷", "截圖裁切", "沒有圖")
+        order = ("快取", "依編號推斷", "訊息貼圖或拼拼樂（用截圖）", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
     voices = [m for m in chat.messages if m.kind == "voice"]
     if voices:
@@ -189,6 +198,8 @@ def media_summary(chat, media):
 def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, page_min=PAGE_MIN,
           log=print):
     chat = load_chat(workdir)
+    for m in chat.messages:                       # 訊息類型依目前的規則重新判斷，不必重新 parse
+        m.kind = classify(m.sender, m.body)
     steps, screens, paths, parts = load_capture(workdir)
     report = [f"聊天室：{chat.title}，txt 共 {len(chat.messages)} 則訊息"]
     uniques, pairs, media, notices = [], [(None, 0.0)] * len(chat.messages), None, []
@@ -250,8 +261,11 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
             report.append(f"    多出來的列（{step_label(steps[uniques[j].frame])}）：{r.kind} {r.time} {r.side} {r.text[:40]!r}")
         with open(os.path.join(workdir, "alignment.json"), "w", encoding="utf-8") as f:
             json.dump([{"msg": m.idx, "row": j, "score": round(s or 0, 2),
-                        "frame": uniques[j].frame if j is not None else None}
-                       for m, (j, s) in zip(chat.messages, pairs)], f)
+                        "frame": uniques[j].frame if j is not None else None,
+                        "where": step_label(steps[uniques[j].frame]) if j is not None else None,
+                        "xml": dump_path(workdir, steps[uniques[j].frame]) if j is not None else None,
+                        "row_kind": rows[j].kind if j is not None else None}
+                       for m, (j, s) in zip(chat.messages, pairs)], f, ensure_ascii=False)
         log("取得貼圖、照片……")
         media = resolve(workdir, chat, uniques, pairs, device=device, chat_dir=chat_dir, frame_paths=paths,
                         stickers=stickers, photos=photos, refresh=refresh, log=log)
@@ -265,7 +279,8 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         i = previous_message(pairs, j)
         if i is not None:
             after.setdefault(chat.messages[i].idx, []).append(text)
-    site = render(workdir, chat, media, notices=after, page_min=page_min, log=log)
+    theme = sample_theme(screens, paths) if steps else {}
+    site = render(workdir, chat, media, notices=after, page_min=page_min, theme=theme, log=log)
     with open(os.path.join(workdir, "report.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(report) + "\n")
     for line in report:
