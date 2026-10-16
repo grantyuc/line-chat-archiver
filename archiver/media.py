@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from .capture import image_path
-from .imgio import imread, imwrite, is_animated, sniff
+from .imgio import MP4_BOXES, head_hex, imread, imwrite, is_animated, sniff
 from .imgmatch import SAME_PHOTO, features, score, similarity
 
 CUSTOM_STICKER = 0.03   # 截圖比快取的貼圖多出這麼多內容，就當成訊息貼圖／拼拼樂，改用截圖
@@ -94,6 +94,7 @@ class PhotoLibrary:
         self._parse_listing()
         self.chat_dir = chat_dir
         self.names, self.sigs = np.array([]), np.zeros((0, SIG * SIG), np.float32)
+        self.unknown = {}
 
     def _save_listing(self):
         with open(self.listing_file, "w", encoding="utf-8") as f:
@@ -258,7 +259,8 @@ class PhotoLibrary:
         return sorted(int(n) for n, e in self.entries.items() if e["dir"] == chat_dir and "thumb" in e)
 
     def fetch(self, number):
-        """拉回這則訊息最好的版本。回傳 (本機路徑, 版本, 格式)。"""
+        """拉回這則訊息最好的版本。回傳 (本機路徑, 版本, 格式)。
+        有大圖或影片檔但認不得格式時，記在 self.unknown[編號] = [(版本, 大小, 檔頭)]，報告中列出。"""
         entry = self.entries[number]
         for variant in ("original", "plain"):
             if variant in entry:
@@ -269,6 +271,7 @@ class PhotoLibrary:
                 kind = sniff(local)
                 if kind:
                     return local, variant, kind
+                self.unknown.setdefault(number, []).append((variant, size, head_hex(local)))
         return self.thumb_path(number), "thumb", sniff(self.thumb_path(number)) or "jpg"
 
 
@@ -503,13 +506,15 @@ AAC_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 1200
 DURATION_RE = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
 
 
-def aac_seconds(path):
-    """ADTS 格式 AAC 檔的長度（秒）；不是 ADTS 或讀不到時回傳 None。"""
+def audio_seconds(path):
+    """語音檔的長度（秒）：ADTS 格式的 AAC 數音框，MP4／M4A 讀 mvhd；讀不到時回傳 None。"""
     try:
         with open(path, "rb") as f:
             data = f.read()
     except OSError:
         return None
+    if data[4:8] in MP4_BOXES:
+        return _mp4_seconds(data)
     i, frames, rate = 0, 0, None
     while i + 7 <= len(data) and data[i] == 0xFF and data[i + 1] & 0xF6 == 0xF0:
         index = (data[i + 2] >> 2) & 0x0F
@@ -520,6 +525,20 @@ def aac_seconds(path):
         frames += 1 + (data[i + 6] & 0x03)
         i += length
     return frames * 1024 / rate if rate and frames else None
+
+
+def _mp4_seconds(data):
+    i = data.find(b"mvhd")
+    if i < 4 or i + 36 > len(data):
+        return None
+    if data[i + 4] == 1:                                  # 版本 1：時間欄位是 64 位元
+        scale, length = int.from_bytes(data[i + 24:i + 28], "big"), int.from_bytes(data[i + 28:i + 36], "big")
+    else:
+        scale, length = int.from_bytes(data[i + 16:i + 20], "big"), int.from_bytes(data[i + 20:i + 24], "big")
+    return length / scale if scale else None
+
+
+VOICE_EXT = {"aac": "aac", "mp4": "m4a", "amr": "amr", "ogg": "ogg"}     # 語音檔的實際格式 → 網站上的副檔名
 
 
 def screen_seconds(row):
@@ -676,14 +695,16 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
             if os.path.exists(photo_lib.thumb_path(number)):
                 shutil.copyfile(photo_lib.thumb_path(number), os.path.join(site, thumb_rel))
             else:                     # 快取中沒有縮圖：從大圖縮小，影片則用截圖
-                small = shrink(imread(path)) if kind != "mp4" else None
+                small = shrink(imread(path)) if kind not in ("mp4", "webm") else None
                 imwrite(os.path.join(site, thumb_rel), small if small is not None else shot)
         full_rel = f"media/photos/{number}.{kind}"
         if not os.path.exists(os.path.join(site, full_rel)):
             shutil.copyfile(path, os.path.join(site, full_rel))
-        item = {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
+        item = {"type": "video" if kind in ("mp4", "webm") else "image", "src": thumb_rel, "full": full_rel,
                 "source": variant, "number": number}
-        if is_animated(path, kind) or (kind == "mp4" and photo):
+        if number in photo_lib.unknown:
+            item["unknown"] = photo_lib.unknown[number]
+        if is_animated(path, kind) or (kind in ("mp4", "webm") and photo):
             item["anim"] = True
         return item
 
@@ -779,15 +800,26 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if files:
             local = {n: photo_lib.fetch_voice(n) for n in files}
             shown = {p: screen_seconds(uniques[slots[p][0]].row) for p in voice_pos if slots[p]}
+            lengths = {n: audio_seconds(path) for n, path in local.items()}
             assigned = assign_voices(voice_pos, numbers, files, {p: s for p, s in shown.items() if s is not None},
-                                     {n: aac_seconds(path) for n, path in local.items()})
+                                     lengths)
             os.makedirs(os.path.join(site, "media", "voice"), exist_ok=True)
             for p, n in assigned.items():
-                rel = f"media/voice/{n}.aac"
+                if not os.path.getsize(local[n]):           # 空檔：LINE 沒下載到（過期）
+                    stats["voice:empty"] += 1
+                    continue
+                kind = sniff(local[n])
+                stats[f"voice:format:{kind or 'unknown'}"] += 1
+                rel = f"media/voice/{n}.{VOICE_EXT.get(kind, 'aac')}"
                 if not os.path.exists(os.path.join(site, rel)):
                     shutil.copyfile(local[n], os.path.join(site, rel))
-                result.setdefault(chat.messages[p].idx, []).append(
-                    {"type": "audio", "src": rel, "source": "cache", "number": str(n)})
+                seconds = shown.get(p) if shown.get(p) is not None else lengths[n]
+                item = {"type": "audio", "src": rel, "source": "cache", "number": str(n), "format": kind or "unknown"}
+                if seconds is not None:
+                    item["seconds"] = round(seconds)
+                if not kind:
+                    item["head"] = head_hex(local[n])
+                result.setdefault(chat.messages[p].idx, []).append(item)
                 stats["voice:cache"] += 1
         log(f"    語音訊息：{len(voice_pos)} 則，快取中有 {len(files) if files else 0} 個語音檔，"
             f"對到 {stats['voice:cache']} 則")

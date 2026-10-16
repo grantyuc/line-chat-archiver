@@ -35,8 +35,20 @@ def is_animated(path, kind):
     return head[12:16] == b"VP8X" and bool(head[20] & 0x02) or b"ANIM" in head
 
 
+MP4_BOXES = (b"ftyp", b"moov", b"mdat", b"free", b"wide", b"skip", b"pnot")   # MP4／MOV 開頭可能的區塊
+
+
+def head_hex(path, n=12):
+    """檔頭的前幾個位元組（報告中說明認不得的檔案用）。"""
+    try:
+        with open(path, "rb") as f:
+            return f.read(n).hex(" ")
+    except OSError:
+        return ""
+
+
 def sniff(path):
-    """依檔頭判斷格式：jpg/png/apng/webp/gif/mp4/aac；不認得時回傳空字串。"""
+    """依檔頭判斷格式：jpg/png/apng/webp/gif/mp4/webm/aac/amr/ogg；不認得時回傳空字串。"""
     try:
         with open(path, "rb") as f:
             head = f.read(4096)
@@ -50,8 +62,14 @@ def sniff(path):
         return "webp"
     if head[:3] == b"GIF":
         return "gif"
-    if head[4:8] == b"ftyp":
+    if head[4:8] in MP4_BOXES:
         return "mp4"
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "webm"
     if len(head) > 1 and head[0] == 0xFF and head[1] & 0xF6 == 0xF0:
         return "aac"
+    if head.startswith(b"#!AMR"):
+        return "amr"
+    if head[:4] == b"OggS":
+        return "ogg"
     return ""

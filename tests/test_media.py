@@ -288,6 +288,45 @@ def test_voice_messages_get_their_audio_files(tmp_path):
     assert os.path.exists(os.path.join(work, "site", played["src"]))
 
 
+def test_video_and_voice_files_in_other_formats(tmp_path):
+    from archiver.build import media_summary
+    from tests.fakechat import m4a
+    txt, items = make_chat(days=4, per_day=25, seed=2, voices=True)
+    chat = parse(txt)
+    device = FakeChat(items)
+    videos = [it for it in device.items if it["kind"] == "video"]
+    voices = [it for it in device.items if it["kind"] == "voice"]
+    assert len(videos) >= 3 and len(voices) >= 3
+    folder = f"{CHATS}/{CHAT_ID}/messages/"
+    del device.files[folder + videos[0]["number"]]                                  # 只有縮圖
+    device.files[folder + videos[1]["number"]] = b"\x00\x00\x00\x08wide" + bytes(2000)  # MOV：第一個區塊不是 ftyp
+    device.files[folder + videos[2]["number"]] = b"LINEENC1" + bytes(2000)           # 認不得的格式
+    device.files[f"{folder}voice_{voices[0]['number']}.aac"] = m4a(voices[0]["seconds"])  # 副檔名是 aac，其實是 M4A
+    device.files[f"{folder}voice_{voices[1]['number']}.aac"] = b""                         # 沒下載到的語音
+    work, data = capture_and_resolve(tmp_path, chat, device)
+    got = {m[0].get("number"): m[0] for m in data["media"].values()}
+    assert got[videos[0]["number"]]["type"] == "image" and got[videos[0]["number"]]["source"] == "thumb"
+    assert got[videos[1]["number"]]["type"] == "video"
+    assert got[videos[2]["number"]]["type"] == "image" and got[videos[2]["number"]]["unknown"][0][0] == "plain"
+    voice = got[voices[0]["number"]]
+    assert voice["src"].endswith(".m4a") and voice["format"] == "mp4" and voice["seconds"] == voices[0]["seconds"]
+    assert voices[1]["number"] not in got
+    assert all(got[it["number"]]["seconds"] == it["seconds"] for it in voices[2:] if it["number"] in got)
+    report = "\n".join(media_summary(chat, data))
+    assert "只有縮圖（不能播放） 2" in report and "認不得格式：1 則" in report and "LINEENC1".encode().hex(" ") in report
+    assert "檔案是空的 1" in report and "mp4 1" in report
+
+
+def test_audio_seconds_reads_adts_and_m4a(tmp_path):
+    from archiver.media import audio_seconds
+    from tests.fakechat import adts, m4a
+    for name, data, want in (("a.aac", adts(12), 12), ("b.aac", m4a(7.5), 7.5), ("c.aac", b"", None)):
+        path = tmp_path / name
+        path.write_bytes(data)
+        got = audio_seconds(str(path))
+        assert (got is None) if want is None else abs(got - want) < 0.1
+
+
 def test_assign_voices():
     from archiver.media import assign_voices
     # 則數和檔數一樣：依序

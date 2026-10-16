@@ -247,10 +247,17 @@ def test_voice_message_has_a_player(tmp_path):
     chat = parse(txt)
     m = chat.messages[0]
     m.kind = "voice"
-    media = {"media": {str(m.idx): [{"type": "audio", "src": "media/voice/1.aac", "source": "cache"}]}, "avatars": {}}
+    v = chat.messages[1]
+    v.kind = "video"
+    media = {"media": {str(m.idx): [{"type": "audio", "src": "media/voice/1.aac", "source": "cache", "seconds": 67}],
+                       str(v.idx): [{"type": "image", "src": "media/photos/2_t.jpg", "full": "media/photos/2.jpg",
+                                     "source": "thumb", "number": "2"}]}, "avatars": {}}
     site = render(str(tmp_path), chat, media, log=lambda *a: None)
     page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
-    assert '<audio controls preload="none" src="media/voice/1.aac">' in page
+    # 按播放前就要看得到長度（preload="none" 時播放器顯示 0:00）
+    assert '<audio controls preload="metadata" src="media/voice/1.aac"></audio><span class="length">1:07</span>' in page
+    # 手機上沒有影片檔：縮圖標明無法播放
+    assert 'class="photo video-still" href="media/photos/2.jpg"' in page
 
 
 def test_site_uses_colors_from_the_screenshots_and_rechecks_kinds(tmp_path):

@@ -88,6 +88,10 @@ def _media_html(msg, items):
             parts.append(f'<a class="photo" href="{full}"><img loading="lazy" src="{full}" alt="動圖"></a>')
         elif it["type"] == "video" and it.get("full"):
             parts.append(f'<video controls preload="none" poster="{src}" src="{html.escape(it["full"])}"></video>')
+        elif msg.kind == "video":                             # 手機上沒有影片檔：只有縮圖，標上「無法播放」
+            full = html.escape(it.get("full") or it["src"])
+            parts.append(f'<a class="photo video-still" href="{full}" title="手機快取中沒有這段影片，只有縮圖">'
+                         f'<img loading="lazy" src="{src}" alt="影片（只有縮圖）"></a>')
         else:
             full = html.escape(it.get("full") or it["src"])
             parts.append(f'<a class="photo" href="{full}"><img loading="lazy" src="{src}" alt="{LABELS.get(msg.kind, "照片")}"></a>')
@@ -125,7 +129,10 @@ def _message_html(msg, media, avatar, show_head, emoji=None, reactions=None):
     if msg.kind in ("sticker", "photo", "video"):
         content = _media_html(msg, media)
     elif msg.kind == "voice" and media:
-        content = f'<div class="bubble voice"><audio controls preload="none" src="{html.escape(media[0]["src"])}"></audio></div>'
+        it = media[0]
+        length = f'<span class="length">{it["seconds"] // 60}:{it["seconds"] % 60:02d}</span>' if "seconds" in it else ""
+        content = (f'<div class="bubble voice"><audio controls preload="metadata" src="{html.escape(it["src"])}"></audio>'
+                   f'{length}</div>')
     elif media and media[0]["type"] == "emoji":          # 只有表情：像 LINE 一樣放大、沒有泡泡
         content = '<div class="emoji-only">' + "".join(
             f'<img src="{html.escape(it["src"])}" alt="{html.escape(it["name"])}" title="{html.escape(it["name"])}">'

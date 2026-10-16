@@ -39,6 +39,14 @@ def adts(seconds, rate_index=4):
     return (header + payload) * frames
 
 
+def m4a(seconds):
+    """長度為 seconds 秒的 M4A（只有 ftyp 和 moov/mvhd，內容是空的）。"""
+    mvhd = (bytes(4) + bytes(8) + (1000).to_bytes(4, "big") + int(seconds * 1000).to_bytes(4, "big") + bytes(80))
+    mvhd = (8 + len(mvhd)).to_bytes(4, "big") + b"mvhd" + mvhd
+    moov = (8 + len(mvhd)).to_bytes(4, "big") + b"moov" + mvhd
+    return b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A mp42" + moov
+
+
 def make_sticker(seed, w=259, h=224, frame=0):
     """透明背景上的幾個色塊，模擬貼圖 PNG（BGRA）。frame 讓色塊位移，模擬動畫的不同影格。"""
     r = np.random.default_rng(seed)

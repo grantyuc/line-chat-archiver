@@ -84,7 +84,12 @@ img.emoji { height: 1.35em; width: auto; vertical-align: -0.3em; }
 .reactions { display: flex; gap: 3px; margin-top: -2px; }
 .msg.self .reactions { justify-content: flex-end; }
 .reactions img { width: 24px; height: 24px; border-radius: 50%; background: var(--other); box-shadow: 0 0 0 1px rgba(0, 0, 0, .08); }
+.bubble.voice { display: flex; align-items: center; gap: 6px; }
 .bubble.voice audio { display: block; width: min(260px, 60vw); height: 36px; }
+.bubble.voice .length { font-size: 13px; opacity: .75; }
+.photo.video-still { position: relative; }
+.photo.video-still::after { content: "影片無法播放（只有縮圖）"; position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 6px 8px; font-size: 12px; line-height: 1.3; color: #fff; background: rgba(0, 0, 0, .55); }
 .missing { padding: 8px 12px; border-radius: 14px; background: var(--pill); color: var(--pill-text); font-size: 13px; }
 
 .msg, .notice { scroll-margin-top: 110px; }  /* 跳到某則訊息時，不被頂端標題列和返回按鈕蓋住 */

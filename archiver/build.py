@@ -154,6 +154,7 @@ LIST_LIMIT = 200         # 報告中逐則列出改用截圖的媒體，最多�
 def media_summary(chat, media):
     """每則貼圖、照片、影片最後拿到什麼：快取、依編號推斷、截圖，或沒有圖。"""
     lines = ["每則媒體訊息的結果："]
+    unknown = []                  # 快取中有大圖或影片檔，但認不得格式
     for kind in ("photo", "video", "sticker"):
         msgs = [m for m in chat.messages if m.kind == kind]
         if not msgs:
@@ -161,6 +162,8 @@ def media_summary(chat, media):
         got = Counter()
         for m in msgs:
             items = media["media"].get(str(m.idx))
+            if items and items[0].get("unknown"):
+                unknown.append((m, items[0]))
             if not items:
                 got["沒有圖"] += 1
             elif items[0].get("inferred"):
@@ -171,14 +174,32 @@ def media_summary(chat, media):
                 got["訊息貼圖（用截圖）"] += 1
             elif items[0]["source"] == "combo":
                 got["貼圖拼拼樂（用截圖）"] += 1
+            elif kind == "video":
+                got["可以播放" if items[0]["type"] == "video" else "只有縮圖（不能播放）"] += 1
+            elif items[0]["source"] == "thumb":
+                got["快取（只有縮圖）"] += 1
             else:
                 got["快取"] += 1
-        order = ("快取", "依編號推斷", "訊息貼圖（用截圖）", "貼圖拼拼樂（用截圖）", "截圖裁切", "沒有圖")
+        order = ("可以播放", "只有縮圖（不能播放）", "快取", "快取（只有縮圖）", "依編號推斷", "訊息貼圖（用截圖）",
+                 "貼圖拼拼樂（用截圖）", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
+    if unknown:
+        lines.append(f"    快取中有檔案但認不得格式：{len(unknown)} 則（用縮圖代替），例如：")
+        for m, it in unknown[:5]:
+            files = "、".join(f"{v} {size} B 檔頭 {head}" for v, size, head in it["unknown"])
+            lines.append(f"        {m.kind} {m.date} {m.time} 編號 {it['number']}：{files}")
     voices = [m for m in chat.messages if m.kind == "voice"]
     if voices:
+        stats = media.get("stats", {})
         played = sum(1 for m in voices if media["media"].get(str(m.idx)))
-        lines.append(f"    voice：共 {len(voices)} 則，可以播放 {played}、沒有檔案 {len(voices) - played}")
+        formats = "、".join(f"{k.split(':')[-1]} {v}" for k, v in sorted(stats.items()) if k.startswith("voice:format:"))
+        lines.append(f"    voice：共 {len(voices)} 則，有檔案 {played}（格式：{formats or '無'}）、"
+                     f"檔案是空的 {stats.get('voice:empty', 0)}、沒有檔案 {len(voices) - played - stats.get('voice:empty', 0)}")
+        for m in voices:
+            items = media["media"].get(str(m.idx))
+            if items and items[0].get("head"):
+                lines.append(f"        認不得的語音格式 {m.date} {m.time} 編號 {items[0]['number']}：檔頭 {items[0]['head']}")
+                break
     if media.get("emoji"):
         lines.append(f"    LINE 表情：從畫面學到 {len(media['emoji'])} 種，文字中的（名稱）換成圖片")
     if media.get("reactions"):
