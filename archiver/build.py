@@ -183,6 +183,13 @@ def media_summary(chat, media):
         order = ("可以播放", "只有縮圖（不能播放）", "快取", "快取（只有縮圖）", "依編號推斷", "訊息貼圖（用截圖）",
                  "貼圖拼拼樂（用截圖）", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
+        if kind == "video":
+            where = Counter(media["media"][str(m.idx)][0]["source"] for m in msgs if media["media"].get(str(m.idx))
+                            and media["media"][str(m.idx)][0]["type"] == "video")
+            names = {"player": "LINE 播放器快取", "folder": "--videos 資料夾"}
+            if where.keys() & names.keys():
+                lines.append("        可以播放的影片來自：" + "、".join(
+                    f"{names.get(k, '聊天快取')} {v}" for k, v in sorted(where.items())))
     if unknown:
         lines.append(f"    快取中有檔案但認不得格式：{len(unknown)} 則（用縮圖代替），例如：")
         for m, it in unknown[:5]:
@@ -223,7 +230,7 @@ def media_summary(chat, media):
 
 
 def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refresh=False, page_min=PAGE_MIN,
-          log=print):
+          videos_dir=None, log=print):
     chat = load_chat(workdir)
     for m in chat.messages:                       # 訊息類型依目前的規則重新判斷，不必重新 parse
         m.kind = classify(m.sender, m.body)
@@ -295,7 +302,7 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
                        for m, (j, s) in zip(chat.messages, pairs)], f, ensure_ascii=False)
         log("取得貼圖、照片……")
         media = resolve(workdir, chat, uniques, pairs, device=device, chat_dir=chat_dir, frame_paths=paths,
-                        stickers=stickers, photos=photos, refresh=refresh, log=log)
+                        stickers=stickers, photos=photos, refresh=refresh, videos_dir=videos_dir, log=log)
         report.append("媒體來源：")
         report += [f"    {k}：{v}" for k, v in sorted(media["stats"].items())]
         report += media_summary(chat, media)

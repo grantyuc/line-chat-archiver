@@ -172,12 +172,19 @@ class PhotoLibrary:
         self.sigs = np.array(sigs, np.float32).reshape(-1, SIG * SIG)
         self.log(f"照片縮圖索引：{len(names)} 張")
 
-    def lookup(self, image, candidates=10):
-        """回傳 (編號, 一致區塊比例)；找不到時回傳 None。"""
+    def lookup(self, image, candidates=10, among=None):
+        """回傳 (編號, 一致區塊比例)；找不到時回傳 None。among：只在這些編號裡找。"""
         if not len(self.names) or image.size == 0:
             return None
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        order = np.argsort(-(self.sigs @ signature(gray)))[:candidates]
+        sims = self.sigs @ signature(gray)
+        if among is not None:
+            allowed = np.array([str(n) in among for n in self.names])
+            if not allowed.any():
+                return None
+            sims = np.where(allowed, sims, -np.inf)
+            candidates = min(candidates, int(allowed.sum()))
+        order = np.argsort(-sims)[:candidates]
         query = features(gray)
         for i in order:
             path = self.thumb_path(str(self.names[i]))
@@ -273,6 +280,105 @@ class PhotoLibrary:
                     return local, variant, kind
                 self.unknown.setdefault(number, []).append((variant, size, head_hex(local)))
         return self.thumb_path(number), "thumb", sniff(self.thumb_path(number)) or "jpg"
+
+
+# ---------------------------------------------------------------- 影片 ----
+
+MP = LINE_FILES + "/mp"                                 # LINE 播放影片時的快取（ExoPlayer）
+SPAN_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\.v3\.exo")
+VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".3gp", ".webm")
+
+
+def mp4_complete(path):
+    """MP4 的最上層區塊剛好排滿整個檔案，而且有 moov 和 mdat：影片是完整的。"""
+    total = os.path.getsize(path)
+    seen, i = set(), 0
+    with open(path, "rb") as f:
+        while i + 8 <= total:
+            f.seek(i)
+            head = f.read(16)
+            size, kind = int.from_bytes(head[:4], "big"), head[4:8]
+            if size == 1:
+                size = int.from_bytes(head[8:16], "big")
+            elif size == 0:
+                size = total - i
+            if size < 8:
+                return False
+            seen.add(kind)
+            i += size
+    return i == total and {b"moov", b"mdat"} <= seen
+
+
+def player_videos(device, cache_dir, log=print):
+    """LINE 播放過的影片。回傳 (接好的影片檔路徑清單, 只快取了一部分的影片數)。
+
+    files/mp/<0-9>/<內容編號>.<位置>.<時間>.v3.exo 是某段影片從「位置」（位元組）開始的一塊。
+    同一個內容編號的各塊從 0 開始接得起來、而且接起來是完整的 MP4，才算一段影片；
+    只播了一部分的影片中間會有缺口。
+    """
+    spans = {}
+    for size, rel in device.list_files(MP):
+        m = SPAN_RE.fullmatch(rel.rsplit("/", 1)[-1])
+        if m:
+            spans.setdefault(m.group(1), []).append((int(m.group(2)), size, rel))
+    out_dir = os.path.join(cache_dir, "player")
+    span_dir = os.path.join(out_dir, "spans")
+    os.makedirs(span_dir, exist_ok=True)
+    videos, partial = [], 0
+    for cid, parts in sorted(spans.items()):
+        parts.sort()
+        end = 0
+        for start, size, _ in parts:
+            if start != end:
+                break
+            end += size
+        else:
+            target = os.path.join(out_dir, f"{cid}_{end}.mp4")
+            if not os.path.exists(target):
+                local = [os.path.join(span_dir, rel.rsplit("/", 1)[-1]) for _, _, rel in parts]
+                device.pull_many([f"{MP}/{rel}" for _, _, rel in parts], span_dir)
+                with open(target + ".part", "wb") as out:
+                    for path in local:
+                        with open(path, "rb") as f:
+                            shutil.copyfileobj(f, out)
+                os.replace(target + ".part", target)
+                for path in local:
+                    os.remove(path)
+            if mp4_complete(target):
+                videos.append(target)
+                continue
+        partial += 1
+    return videos, partial
+
+
+def folder_videos(folder):
+    """資料夾（含子資料夾）裡的影片檔，例如從手機相簿拉回來的。"""
+    return sorted(os.path.join(d, n) for d, _, names in os.walk(folder) for n in names
+                  if n.lower().endswith(VIDEO_EXTS))
+
+
+def video_frames(path, seconds=(0.0, 0.5, 1.0, 2.0)):
+    """影片開頭幾個時間點的畫面（縮小到和縮圖差不多），讀不到時回傳 []。"""
+    cap = cv2.VideoCapture(path)
+    frames = []
+    try:
+        for t in seconds:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                frames.append(shrink(frame, 640))
+    finally:
+        cap.release()
+    return frames
+
+
+def match_video(photo_lib, path, numbers):
+    """用影片的畫面比對 numbers（只有縮圖的影片訊息編號）的縮圖，回傳對到的編號或 None。"""
+    for frame in video_frames(path):
+        hit = photo_lib.lookup(frame, among=numbers)
+        if hit:
+            return hit[0]
+    return None
 
 
 # ---------------------------------------------------------------- 貼圖 ----
@@ -650,9 +756,10 @@ def infer_hidden(numbers, used, after, before=None):
 
 
 def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir=None,
-            stickers=True, photos=True, refresh=False, frame_paths=None, log=print):
+            stickers=True, photos=True, refresh=False, frame_paths=None, videos_dir=None, log=print):
     """產生 <工作目錄>/site/media/ 與 media.json：{訊息索引: [媒體…]}、{"avatars": {名稱: 路徑}}。
-    frame_paths：各畫面（uniques 的 frame 編號）的截圖路徑，見 build.load_capture。"""
+    frame_paths：各畫面（uniques 的 frame 編號）的截圖路徑，見 build.load_capture。
+    videos_dir：放影片檔的資料夾（例如從手機相簿拉回來的），用畫面比對縮圖對回影片訊息。"""
     cache_dir = cache_dir or os.path.join(workdir, "cache")
     site = os.path.join(workdir, "site")
     for sub in ("stickers", "photos", "crops", "avatars"):
@@ -768,6 +875,33 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
             continue
         items[k] = photo_item(number, image, photo=chat.messages[pos].kind == "photo")
         numbers[pos] = int(number)
+    # 影片：聊天快取中只有縮圖的，到 LINE 播放器的快取（播放過的影片）和 videos_dir 找影片檔，
+    # 用影片的畫面比對縮圖，對回訊息
+    stills = {it["number"]: it for msg in chat.messages if msg.kind == "video"
+              for it in result.get(msg.idx, []) if it.get("number") and it["type"] == "image"}
+    if stills and photo_lib and chat_dir:
+        files = []
+        if device is not None:
+            found, partial = player_videos(device, cache_dir, log)
+            files += [(path, "player") for path in found]
+            log(f"    LINE 播放器快取：完整的影片 {len(found)} 段，只播了一部分的 {partial} 段")
+        if videos_dir:
+            found = folder_videos(videos_dir)
+            files += [(path, "folder") for path in found]
+            log(f"    {videos_dir}：{len(found)} 個影片檔")
+        matched = 0
+        for path, source in files:
+            number = match_video(photo_lib, path, stills)
+            if number is None:
+                continue
+            it = stills.pop(number)
+            rel = f"media/photos/{number}{os.path.splitext(path)[1].lower()}"
+            shutil.copyfile(path, os.path.join(site, rel))
+            it.update(type="video", full=rel, source=source)
+            it.pop("unknown", None)
+            matched += 1
+        if files:
+            log(f"    對回只有縮圖的影片訊息：{matched} 則；仍只有縮圖：{len(stills)} 則")
     for msg in chat.messages:
         for it in result.get(msg.idx, []):
             stats[f"{msg.kind}:{it['source']}"] += 1

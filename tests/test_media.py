@@ -317,6 +317,34 @@ def test_video_and_voice_files_in_other_formats(tmp_path):
     assert "檔案是空的 1" in report and "mp4 1" in report
 
 
+def test_videos_from_the_player_cache_and_a_folder(tmp_path):
+    """聊天快取只有縮圖的影片：從 LINE 播放器快取（完整播過的）和資料夾（存到相簿的）找影片檔。"""
+    from tests.fakechat import mp4
+    txt, items = make_chat(days=4, per_day=25, seed=2, voices=True)
+    chat = parse(txt)
+    device = FakeChat(items)
+    videos = [it for it in device.items if it["kind"] == "video"]
+    for it in videos:
+        del device.files[f"{CHATS}/{CHAT_ID}/messages/{it['number']}"]
+    device.add_player_video(3, mp4(videos[0]["frame"], tmp_path / "a.mp4"))            # 完整播過
+    device.add_player_video(5, mp4(videos[1]["frame"], tmp_path / "b.mp4"), drop=1)    # 只播了一部分
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    mp4(videos[2]["frame"], saved / "LINE_MOVIE_1792178442099.mp4")
+    work, data = capture_and_resolve(tmp_path, chat, device, videos_dir=str(saved))
+    got = {m[0].get("number"): m[0] for m in data["media"].values()}
+    first, second, third = (got[it["number"]] for it in videos[:3])
+    assert first["type"] == "video" and first["source"] == "player" and first["full"].endswith(".mp4")
+    assert second["type"] == "image" and second["source"] == "thumb"
+    assert third["type"] == "video" and third["source"] == "folder"
+    for it in (first, third):
+        assert open(os.path.join(work, "site", it["full"]), "rb").read()[4:8] == b"ftyp"
+    assert all(got[it["number"]]["type"] == "image" for it in videos[3:])
+    from archiver.build import media_summary
+    report = "\n".join(media_summary(chat, data))
+    assert "可以播放的影片來自：--videos 資料夾 1、LINE 播放器快取 1" in report
+
+
 def test_audio_seconds_reads_adts_and_m4a(tmp_path):
     from archiver.media import audio_seconds
     from tests.fakechat import adts, m4a

@@ -11,7 +11,7 @@ import os
 import cv2
 import numpy as np
 
-from archiver.media import CHATS, STICKERS
+from archiver.media import CHATS, MP, STICKERS
 from tests import xmlgen
 
 W, H = 1080, 2340
@@ -45,6 +45,17 @@ def m4a(seconds):
     mvhd = (8 + len(mvhd)).to_bytes(4, "big") + b"mvhd" + mvhd
     moov = (8 + len(mvhd)).to_bytes(4, "big") + b"moov" + mvhd
     return b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A mp42" + moov
+
+
+def mp4(image, path, frames=12):
+    """畫面固定是 image 的 MP4 影片（寫到 path 再讀回位元組）。"""
+    h, w = image.shape[:2]
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    for _ in range(frames):
+        writer.write(image)
+    writer.release()
+    with open(path, "rb") as f:
+        return f.read()
 
 
 def make_sticker(seed, w=259, h=224, frame=0):
@@ -153,6 +164,7 @@ class FakeChat:
                 self.files[folder + ".thumb"] = jpg(thumb, 80)
                 if it["kind"] == "video":
                     self.files[folder] = b"\x00\x00\x00\x18ftypmp42" + bytes(2000)
+                    it["frame"] = base                       # 影片的畫面（縮圖由它縮小而來）
                 else:
                     self.files[folder] = jpg(base, 85)
                     if it["idx"] % 3 == 0:
@@ -190,6 +202,14 @@ class FakeChat:
         for k in range(40):
             self.files[f"{STICKERS}/2000/{6000000 + k}"] = cv2.imencode(".png", make_sticker(_seed("st", k)))[1].tobytes()
             self.files[f"{STICKERS}/2000/{6000000 + k}_key"] = cv2.imencode(".png", make_sticker(_seed("key", k), 108, 100))[1].tobytes()
+
+    def add_player_video(self, content_id, data, span=65536, drop=None):
+        """LINE 播放器快取（ExoPlayer）：影片切成幾塊，檔名是 <內容編號>.<位置>.<時間>.v3.exo，
+        隨機放在 0～9 的子目錄。drop：少了第幾塊（只播了一部分）。"""
+        for k, pos in enumerate(range(0, len(data), span)):
+            if k != drop:
+                self.files[f"{MP}/{(content_id + k) % 10}/{content_id}.{pos}.{1792178440000 + k}.v3.exo"] = data[pos:pos + span]
+        self.files[f"{MP}/cached_content_index.exi"] = bytes(104)
 
     # ---- 檔案（adb pull） ----
     def list_files(self, remote_dir):
