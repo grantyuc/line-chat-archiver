@@ -141,6 +141,9 @@ def previous_message(pairs, row_index):
     return matched[k - 1][1] if k else None
 
 
+LIST_LIMIT = 200         # 報告中逐則列出改用截圖的媒體，最多幾則
+
+
 def media_summary(chat, media):
     """每則貼圖、照片、影片最後拿到什麼：快取、依編號推斷、截圖，或沒有圖。"""
     lines = ["每則媒體訊息的結果："]
@@ -161,15 +164,25 @@ def media_summary(chat, media):
                 got["快取"] += 1
         order = ("快取", "依編號推斷", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
+    voices = [m for m in chat.messages if m.kind == "voice"]
+    if voices:
+        played = sum(1 for m in voices if media["media"].get(str(m.idx)))
+        lines.append(f"    voice：共 {len(voices)} 則，可以播放 {played}、沒有檔案 {len(voices) - played}")
+    listed = 0
     for m in chat.messages:
         items = media["media"].get(str(m.idx))
         if m.kind not in ("photo", "video", "sticker") or (items and items[0]["source"] != "screenshot"):
+            continue
+        listed += 1
+        if listed > LIST_LIMIT:
             continue
         where = f"site/{items[0]['src']}" if items else "畫面上沒有"
         lines.append(f"    {m.kind} {m.date} {m.time} {m.sender}：{where}")
         if items and "tried" in items[0]:
             tried = "、".join(f"{n}（{v}）{s:.2f}" for n, v, s in items[0]["tried"]) or "沒有"
             lines.append(f"        前後已對到的照片之間的快取編號（有哪些檔案）一致比例：{tried}")
+    if listed > LIST_LIMIT:
+        lines.append(f"    ……其餘 {listed - LIST_LIMIT} 則略")
     return lines
 
 

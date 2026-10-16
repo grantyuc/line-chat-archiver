@@ -58,6 +58,21 @@ def media_row(y1, y2, kind, hhmm, self_side, sender="", width=1080, x_span=(114,
     return node("chat_ui_row_swipeable_framelayout", bounds=(0, y1, width, y2), children=kids)
 
 
+def voice_row(y1, y2, seconds, hhmm, self_side, sender="", width=1080):
+    """語音訊息：播放鍵和長度（實機的元件 id 未確認，這裡只要解析成未知列、文字含長度）。"""
+    x1, x2 = (width - 21 - 280, width - 21) if self_side else (114, 394)
+    kids = [node("chat_ui_row_voice_message", "android.widget.LinearLayout", (x1, y1, x2, y2), children=[
+        node("chat_ui_row_voice_duration", "android.widget.TextView", (x1 + 120, y1 + 20, x2 - 20, y2 - 20),
+             text=f"{seconds // 60}:{seconds % 60:02d}")])]
+    ts = (x1 - 110, y2 - 48, x1 - 7, y2 - 11) if self_side else (x2 + 13, y2 - 48, x2 + 116, y2 - 11)
+    kids.append(node("chat_ui_row_timestamp", "android.widget.TextView", ts, text=h12(hhmm)))
+    if self_side:
+        kids.append(node("chat_ui_row_read_count", "android.widget.TextView", (ts[0], ts[1] - 40, ts[2], ts[1] - 3), text="已讀"))
+    elif sender:
+        kids.append(node("chat_ui_row_thumbnail", "android.widget.ImageView", (21, y1, 100, y1 + 79), desc=f"{sender}的個人圖片"))
+    return node("chat_ui_row_swipeable_framelayout", bounds=(0, y1, width, y2), children=kids)
+
+
 def date_row(y1, y2, label, width=1080):
     return node("chat_ui_row_date", bounds=(0, y1, width, y2),
                 children=[node("chat_ui_date_indicator_text", "android.widget.TextView", (446, y1 + 10, 635, y2 - 10), text=label)])

@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  // ---- 燈箱：點照片放大，左右鍵切換，Esc 關閉 ----
+  // ---- 燈箱：點照片放大，左右鍵切換，Esc 關閉；燈箱裡再點照片可以放大／縮回 ----
   const photos = Array.from(document.querySelectorAll("a.photo"));
   if (photos.length) {
     const box = document.createElement("div");
@@ -11,13 +11,36 @@
     document.body.appendChild(box);
     const img = box.querySelector("img");
     let current = -1;
+    const unzoom = () => { box.classList.remove("zoomed"); img.style.width = img.style.height = ""; };
     const show = (i) => {
       current = (i + photos.length) % photos.length;
+      unzoom();
       img.src = photos[current].getAttribute("href");
       box.classList.add("open");
     };
-    const hide = () => { box.classList.remove("open"); img.removeAttribute("src"); current = -1; };
+    const hide = () => { unzoom(); box.classList.remove("open"); img.removeAttribute("src"); current = -1; };
+    // 放大：窄長的照片放大到畫面寬度、上下捲動；扁長的放大到畫面高度、左右捲動；
+    // 和畫面比例差不多的放大兩倍。點的位置放大後仍在手指下。
+    const zoom = (e) => {
+      const r = img.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const vw = box.clientWidth, vh = box.clientHeight;
+      let w = vw, h = vw * img.naturalHeight / img.naturalWidth;      // 放大到畫面寬度
+      if (h < vh * 1.2) {                                          // 不夠高：改成放大到畫面高度
+        h = vh; w = vh * img.naturalWidth / img.naturalHeight;
+      }
+      if (w < r.width * 1.5 && h < r.height * 1.5) { w = r.width * 2; h = r.height * 2; }
+      box.classList.add("zoomed");
+      img.style.width = w + "px";
+      img.style.height = h + "px";
+      box.scrollLeft = Math.max(0, fx * w - e.clientX);
+      box.scrollTop = Math.max(0, fy * h - e.clientY);
+    };
     photos.forEach((a, i) => a.addEventListener("click", (e) => { e.preventDefault(); show(i); }));
+    img.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (box.classList.contains("zoomed")) unzoom(); else zoom(e);
+    });
     box.addEventListener("click", (e) => { if (e.target !== img) hide(); });
     document.addEventListener("keydown", (e) => {
       if (current < 0) return;

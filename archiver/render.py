@@ -100,6 +100,8 @@ def _message_html(msg, media, avatar, show_head):
         return f'<div class="notice" id="m{msg.idx}"><span>{html.escape(text)}</span></div>'
     if msg.kind in ("sticker", "photo", "video"):
         content = _media_html(msg, media)
+    elif msg.kind == "voice" and media:
+        content = f'<div class="bubble voice"><audio controls preload="none" src="{html.escape(media[0]["src"])}"></audio></div>'
     else:
         icon = ICONS.get(msg.kind)
         attr = f' class="bubble icon" data-icon="{icon}"' if icon else ' class="bubble"'

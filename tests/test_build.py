@@ -239,3 +239,15 @@ def test_animated_photos_play_in_the_page(tmp_path):
     page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
     assert '<img loading="lazy" src="media/photos/1.gif"' in page
     assert '<video class="anim" muted loop playsinline' in page and "controls" not in page
+
+
+def test_voice_message_has_a_player(tmp_path):
+    from archiver.render import render
+    txt, _ = make_chat(days=1, per_day=3)
+    chat = parse(txt)
+    m = chat.messages[0]
+    m.kind = "voice"
+    media = {"media": {str(m.idx): [{"type": "audio", "src": "media/voice/1.aac", "source": "cache"}]}, "avatars": {}}
+    site = render(str(tmp_path), chat, media, log=lambda *a: None)
+    page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
+    assert '<audio controls preload="none" src="media/voice/1.aac">' in page

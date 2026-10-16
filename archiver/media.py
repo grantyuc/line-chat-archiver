@@ -60,6 +60,7 @@ class PhotoLibrary:
         self.device, self.log = device, log
         self.thumb_dir = os.path.join(cache_dir, "thumbs")
         self.full_dir = os.path.join(cache_dir, "photos")
+        self.voice_dir = os.path.join(cache_dir, "voice")
         os.makedirs(self.thumb_dir, exist_ok=True)
         os.makedirs(self.full_dir, exist_ok=True)
         self.index_file = os.path.join(cache_dir, "thumb_index.npz")
@@ -81,10 +82,17 @@ class PhotoLibrary:
 
     def _parse_listing(self):
         self.entries = {}            # 編號 -> {"dir": 聊天室ID, "thumb"/"plain"/"original": (相對路徑, 大小)}
+        self.voices = {}             # 編號 -> {"dir": 聊天室ID, "file": (相對路徑, 大小)}
         for size, rel in self.listing:
             parts = rel.split("/")
-            m = re.fullmatch(r"(\d+)(\.thumb|\.original)?", parts[-1]) if len(parts) == 3 else None
-            if not m or parts[1] != "messages":
+            if len(parts) != 3 or parts[1] != "messages":
+                continue
+            v = re.fullmatch(r"voice_(\d+)\.aac", parts[-1])
+            if v:
+                self.voices[v.group(1)] = {"dir": parts[0], "file": (rel, size)}
+                continue
+            m = re.fullmatch(r"(\d+)(\.thumb|\.original)?", parts[-1])
+            if not m:
                 continue
             entry = self.entries.setdefault(m.group(1), {"dir": parts[0]})
             entry[{".thumb": "thumb", ".original": "original", None: "plain"}[m.group(2)]] = (rel, size)
@@ -101,6 +109,19 @@ class PhotoLibrary:
         if added:
             self.build_index({chat_dir})
         return added
+
+    def voice_numbers(self, chat_dir):
+        """這個聊天室快取中的語音訊息編號（由小到大）。"""
+        return sorted(int(n) for n, v in self.voices.items() if v["dir"] == chat_dir)
+
+    def fetch_voice(self, number):
+        """拉回一則語音訊息的檔案，回傳本機路徑。"""
+        rel, size = self.voices[str(number)]["file"]
+        os.makedirs(self.voice_dir, exist_ok=True)
+        local = os.path.join(self.voice_dir, os.path.basename(rel))
+        if not os.path.exists(local) or os.path.getsize(local) != size:
+            self.device.pull(f"{CHATS}/{rel}", self.voice_dir)
+        return local
 
     def thumb_path(self, number):
         return os.path.join(self.thumb_dir, number + ".thumb")
@@ -423,6 +444,95 @@ class FrameCache:
         return self.items[frame]
 
 
+AAC_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+DURATION_RE = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?![\d:])")
+
+
+def aac_seconds(path):
+    """ADTS 格式 AAC 檔的長度（秒）；不是 ADTS 或讀不到時回傳 None。"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    i, frames, rate = 0, 0, None
+    while i + 7 <= len(data) and data[i] == 0xFF and data[i + 1] & 0xF6 == 0xF0:
+        index = (data[i + 2] >> 2) & 0x0F
+        length = ((data[i + 3] & 0x03) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
+        if index >= len(AAC_RATES) or length < 7:
+            break
+        rate = AAC_RATES[index]
+        frames += 1 + (data[i + 6] & 0x03)
+        i += length
+    return frames * 1024 / rate if rate and frames else None
+
+
+def screen_seconds(row):
+    """語音訊息列上顯示的長度（例如 0:07）；看不到時回傳 None。"""
+    m = DURATION_RE.search(row.text or "")
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def assign_voices(positions, anchors, files, seconds=None, file_seconds=None, tolerance=2.0):
+    """把語音訊息對到快取中的語音檔。語音沒有畫面可以比，只能靠編號的順序和長度。
+
+    positions：語音訊息的位置（由舊到新）；anchors：{位置: 已對到的照片／影片編號}；
+    files：這個聊天室的語音檔編號（由小到大）；seconds：{位置: 畫面上顯示的秒數}；
+    file_seconds：{編號: 語音檔的秒數}。回傳 {位置: 編號}。
+
+    - 則數和檔數相同：依序配對（編號隨時間遞增）。
+    - 否則以前後已對到的編號分段，段內則數和檔數相同就依序配對；不同時，用長度配對（保持順序）。
+    依序配對時，兩邊都知道長度的配對若長度不合，代表中間少了或多了檔案，也改用長度配對。
+    """
+    seconds, file_seconds = seconds or {}, file_seconds or {}
+
+    def in_order(msgs, cands):
+        pairs = dict(zip(msgs, cands))
+        if any(seconds.get(p) is not None and file_seconds.get(n) is not None
+               and abs(seconds[p] - file_seconds[n]) > tolerance for p, n in pairs.items()):
+            return _match_by_length(msgs, cands, seconds, file_seconds, tolerance)
+        return pairs
+
+    if len(positions) == len(files):
+        return in_order(positions, files)
+    keyed = sorted(anchors.items())
+    groups = {}
+    for p in positions:
+        before = [n for q, n in keyed if q < p]
+        after = [n for q, n in keyed if q > p]
+        groups.setdefault((before[-1] if before else -1, after[0] if after else float("inf")), []).append(p)
+    result = {}
+    for (low, high), msgs in groups.items():
+        cands = [n for n in files if low < n < high]
+        if len(cands) == len(msgs):
+            result.update(in_order(msgs, cands))
+        elif msgs and cands:
+            result.update(_match_by_length(msgs, cands, seconds, file_seconds, tolerance))
+    return result
+
+
+def _match_by_length(msgs, cands, seconds, file_seconds, tolerance):
+    """保持順序、長度差在 tolerance 秒內的配對，配到的越多越好（動態規劃）。"""
+    n, m = len(msgs), len(cands)
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            a, b = seconds.get(msgs[i]), file_seconds.get(cands[j])
+            ok = a is not None and b is not None and abs(a - b) <= tolerance
+            best[i][j] = max(best[i + 1][j], best[i][j + 1], best[i + 1][j + 1] + 1 if ok else 0)
+    result, i, j = {}, 0, 0
+    while i < n and j < m:
+        a, b = seconds.get(msgs[i]), file_seconds.get(cands[j])
+        if a is not None and b is not None and abs(a - b) <= tolerance and best[i][j] == best[i + 1][j + 1] + 1:
+            result[msgs[i]] = cands[j]
+            i, j = i + 1, j + 1
+        elif best[i][j] == best[i + 1][j]:
+            i += 1
+        else:
+            j += 1
+    return result
+
+
 def expand_albums(messages, uniques, pairs):
     """一次傳多張的照片在畫面上是同一列（多個 media），txt 則是連續多則 [照片]（同一人、同一分鐘）。
     回傳每則訊息對到的 (列索引, 該列第幾張媒體)。橫排（more_media）中沒露出來的照片，
@@ -600,6 +710,26 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
             item["inferred"] = True
             stats[f"photo:{item['source']}:inferred"] += 1
             result.setdefault(chat.messages[pos].idx, []).append(item)
+
+    # 語音訊息：依快取編號的順序和長度，對到聊天室快取中的語音檔
+    voice_pos = [p for p, m in enumerate(chat.messages) if m.kind == "voice"]
+    if voice_pos and photo_lib and chat_dir:
+        files = photo_lib.voice_numbers(chat_dir)
+        if files:
+            local = {n: photo_lib.fetch_voice(n) for n in files}
+            shown = {p: screen_seconds(uniques[slots[p][0]].row) for p in voice_pos if slots[p]}
+            assigned = assign_voices(voice_pos, numbers, files, {p: s for p, s in shown.items() if s is not None},
+                                     {n: aac_seconds(path) for n, path in local.items()})
+            os.makedirs(os.path.join(site, "media", "voice"), exist_ok=True)
+            for p, n in assigned.items():
+                rel = f"media/voice/{n}.aac"
+                if not os.path.exists(os.path.join(site, rel)):
+                    shutil.copyfile(local[n], os.path.join(site, rel))
+                result.setdefault(chat.messages[p].idx, []).append(
+                    {"type": "audio", "src": rel, "source": "cache", "number": str(n)})
+                stats["voice:cache"] += 1
+        log(f"    語音訊息：{len(voice_pos)} 則，快取中有 {len(files) if files else 0} 個語音檔，"
+            f"對到 {stats['voice:cache']} 則")
 
     # 頭像以 txt 的發話者名稱存（畫面上的名稱可能是自己設的暱稱，和 txt 不同）
     avatars = {}

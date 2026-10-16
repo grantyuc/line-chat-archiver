@@ -29,6 +29,16 @@ def jpg(img, q=90):
     return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])[1].tobytes()
 
 
+def adts(seconds, rate_index=4):
+    """長度為 seconds 秒的 ADTS AAC（44.1kHz；內容是空的，只有長度對）。"""
+    payload = bytes(10)
+    length = 7 + len(payload)
+    header = bytes([0xFF, 0xF1, (1 << 6) | (rate_index << 2), 0x80 | (length >> 11),
+                    (length >> 3) & 0xFF, ((length & 0x07) << 5) | 0x1F, 0xFC])
+    frames = round(seconds * 44100 / 1024)
+    return (header + payload) * frames
+
+
 def make_sticker(seed, w=259, h=224, frame=0):
     """透明背景上的幾個色塊，模擬貼圖 PNG（BGRA）。frame 讓色塊位移，模擬動畫的不同影格。"""
     r = np.random.default_rng(seed)
@@ -94,6 +104,8 @@ class FakeChat:
                 height = 840 if i % 3 == 0 else 517
             elif it["kind"] == "album":
                 height = 312
+            elif it["kind"] == "voice":
+                height = 96
             else:
                 height = 500
             height = it.get("height", height)
@@ -113,6 +125,10 @@ class FakeChat:
         """產生聊天快取與貼圖快取，並讓畫面上的媒體由它們縮放而來（和實機一樣）。"""
         number = 400000
         for it in self.items:
+            if it["kind"] == "voice":
+                number += 7
+                it["number"] = str(number)
+                self.files[f"{CHATS}/{CHAT_ID}/messages/voice_{number}.aac"] = adts(it["seconds"])
             if it["kind"] in ("photo", "video"):
                 x1, x2 = self._x_span(it)
                 w, h = x2 - x1, it["y2"] - it["y1"]
@@ -245,6 +261,8 @@ class FakeChat:
             width = 453
         elif it["kind"] == "album":
             width = 630
+        elif it["kind"] == "voice":
+            width = 280
         else:
             width = 388
         return (W - 21 - width, W - 21) if it.get("self") else (114, 114 + width)
@@ -276,6 +294,10 @@ class FakeChat:
                 cv2.putText(canvas, label, (x1 + 20, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 3)
             elif it["kind"] == "sticker":
                 canvas[y1:y2, x1:x2] = composite(it["sticker_bgra"], canvas[y1:y2, x1:x2])
+            elif it["kind"] == "voice":
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 255), -1)
+                cv2.putText(canvas, f"{it['seconds']}s #{it['idx']}", (x1 + 90, y1 + 62), cv2.FONT_HERSHEY_SIMPLEX,
+                            1.2, (40, 40, 40), 3)
             elif it["kind"] == "album":
                 canvas[y1:y2, x1:x1 + 312] = it["displays"][0]
                 canvas[y1:y2, x1 + 318:x1 + 630] = it["displays"][1]
@@ -298,6 +320,9 @@ class FakeChat:
             elif it["kind"] == "text":
                 rows.append(xmlgen.text_row(y1, y2, it["text"], it["time"], it.get("self"),
                                             sender=it.get("sender", "") if it["avatar"] else ""))
+            elif it["kind"] == "voice":
+                rows.append(xmlgen.voice_row(y1, y2, it["seconds"], it["time"], it.get("self"),
+                                             sender=it.get("sender", "") if it["avatar"] else ""))
             else:
                 rows.append(xmlgen.media_row(y1, y2, it["kind"], it["time"], it.get("self"),
                                              sender=it.get("sender", "") if it["avatar"] else "",

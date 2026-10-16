@@ -77,6 +77,8 @@ main { max-width: var(--max); margin: 0 auto; padding: 12px 16px 48px; }
 .photo img { display: block; max-width: min(280px, 100%); max-height: 360px; object-fit: cover; }
 video { display: block; max-width: min(280px, 100%); border-radius: 14px; background: #000; }
 video.anim { background: transparent; }
+.bubble.voice { padding: 6px 8px; }
+.bubble.voice audio { display: block; width: min(260px, 60vw); height: 36px; }
 .missing { padding: 8px 12px; border-radius: 14px; background: var(--pill); color: var(--pill-text); font-size: 13px; }
 
 .msg, .notice { scroll-margin-top: 110px; }  /* 跳到某則訊息時，不被頂端標題列和返回按鈕蓋住 */
@@ -104,5 +106,7 @@ nav.pager a { background: var(--pill); color: var(--pill-text); padding: 6px 14p
 /* 燈箱 */
 .lightbox { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, .9); }
 .lightbox.open { display: flex; }
-.lightbox img { max-width: 96vw; max-height: 92vh; object-fit: contain; }
-.lightbox button { position: absolute; top: 12px; right: 16px; font-size: 28px; color: #fff; background: none; border: 0; cursor: pointer; }
+.lightbox img { max-width: 96vw; max-height: 92vh; object-fit: contain; cursor: zoom-in; }
+.lightbox.zoomed { display: block; overflow: auto; }
+.lightbox.zoomed img { max-width: none; max-height: none; cursor: zoom-out; }
+.lightbox button { position: fixed; z-index: 101; top: 12px; right: 16px; font-size: 28px; color: #fff; background: none; border: 0; cursor: pointer; }

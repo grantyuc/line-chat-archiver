@@ -251,3 +251,56 @@ def test_chat_dir_found_even_when_the_oldest_photos_left_the_cache(tmp_path):
     data = resolve(str(work), chat, uniques, pairs, device=device, log=lambda *a: None)
     assert data["chat_dir"] == CHAT_ID
     assert data["stats"].get("photo:screenshot", 0) == 8
+
+
+def capture_and_resolve(tmp_path, chat, device, **kw):
+    work = tmp_path / "work"
+    cap = Capture(device, str(work), idle_wait=0, log=lambda *a: None)
+    steps = cap.run()
+    screens = []
+    for s in steps:
+        with open(cap.path(s["step"], "xml"), "rb") as f:
+            screens.append(parse_dump(f.read()))
+    uniques, _ = stitch(screens, [s["dy"] for s in steps])
+    pairs = align(chat.messages, [u.row for u in uniques])
+    return work, resolve(str(work), chat, uniques, pairs, device=device, log=lambda *a: None, **kw)
+
+
+def test_voice_messages_get_their_audio_files(tmp_path):
+    txt, items = make_chat(days=4, per_day=25, seed=13, voices=True)
+    chat = parse(txt)
+    device = FakeChat(items)
+    voices = [it for it in device.items if it["kind"] == "voice"]
+    assert len(voices) >= 6
+    # 有兩則的語音檔已經不在快取裡：其餘的仍要對到正確的檔案（靠前後照片的編號和長度）
+    for it in voices[1:3]:
+        del device.files[f"{CHATS}/{CHAT_ID}/messages/voice_{it['number']}.aac"]
+    work, data = capture_and_resolve(tmp_path, chat, device)
+    msg_items = [it for it in device.items if it["kind"] != "date"]
+    got = {}
+    for msg, it in zip(chat.messages, msg_items):
+        if it["kind"] == "voice":
+            media = data["media"].get(str(msg.idx))
+            got[it["number"]] = media[0]["number"] if media else None
+    assert all(n == got_n for n, got_n in got.items() if got_n is not None)       # 對到的都對
+    assert sum(1 for v in got.values() if v) >= len(voices) - 2
+    played = next(m for m in data["media"].values() if m[0]["type"] == "audio")[0]
+    assert os.path.exists(os.path.join(work, "site", played["src"]))
+
+
+def test_assign_voices():
+    from archiver.media import assign_voices
+    # 則數和檔數一樣：依序
+    assert assign_voices([3, 8], {}, [500, 520]) == {3: 500, 8: 520}
+    # 前後照片的編號把語音分段：段內則數和檔數一樣就依序
+    anchors = {1: 100, 5: 200, 9: 300}
+    assert assign_voices([2, 3, 7], anchors, [110, 120, 250, 260]) == {2: 110, 3: 120}
+    # 段內數量不同：用長度配對
+    assert assign_voices([7], anchors, [250, 260], seconds={7: 30}, file_seconds={250: 5.0, 260: 30.4}) == {7: 260}
+
+
+def test_voice_order_is_checked_against_lengths():
+    from archiver.media import assign_voices
+    # 數量一樣，但第一則的檔案不在、多了一個別的檔：長度不合就不照順序硬配
+    got = assign_voices([3, 8], {}, [490, 520], seconds={3: 10, 8: 40}, file_seconds={490: 55.0, 520: 40.2})
+    assert got == {8: 520}
