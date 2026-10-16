@@ -70,14 +70,15 @@ def overlap_diff(a, b, roi, dy):
 
 
 def _overlap_diff(ga, gb, dy, skip):
-    """a 往下移 dy 後和 b 的重疊區（避開頂端 skip 像素）的平均灰階差；重疊太小時為無限大。"""
-    h = ga.shape[0]
-    if dy >= 0:
-        pa, pb = ga[skip:h - dy], gb[skip + dy:h]
-    else:
-        pa, pb = ga[skip - dy:h], gb[skip:h + dy]
-    if pa.shape[0] < h // 10:
+    """a 往下移 dy 後和 b 的重疊區（避開頂端 skip 像素）的平均灰階差；重疊太小或沒有重疊時為無限大。"""
+    h = min(ga.shape[0], gb.shape[0])
+    n = h - skip - abs(dy)                  # 重疊的列數；不用切片的負數索引，以免位移比畫面還大時取錯
+    if n < h // 10:
         return float("inf")
+    if dy >= 0:
+        pa, pb = ga[skip:skip + n], gb[skip + dy:skip + dy + n]
+    else:
+        pa, pb = ga[skip - dy:skip - dy + n], gb[skip:skip + n]
     return float(cv2.absdiff(pa, pb).mean())
 
 

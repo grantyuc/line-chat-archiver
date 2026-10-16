@@ -291,3 +291,17 @@ def test_stitch_row_cut_at_both_ends():
     uniques, warnings = stitch([a, b, c], [0, 900, 900])
     assert warnings == []
     assert [u.row.text for u in uniques] == ["更早", long_text]
+
+
+def test_overlap_diff_with_offsets_beyond_the_screen():
+    import numpy as np
+
+    from archiver.offset import overlap_diff
+    rng = np.random.default_rng(1)
+    a = rng.integers(0, 255, (2340, 1080, 3), dtype=np.uint8)
+    b = np.roll(a, 600, axis=0)                     # 往下移了 600px
+    roi = (278, 2143, 126)
+    assert overlap_diff(a, b, roi, 600) < 1
+    assert overlap_diff(a, b, roi, 300) > 20
+    for dy in (2400, 5000, -2400, -5000, 1860, -1860):   # 比聊天區還大：沒有重疊，不能出錯
+        assert overlap_diff(a, b, roi, dy) == float("inf")
