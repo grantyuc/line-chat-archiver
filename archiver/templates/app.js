@@ -27,6 +27,18 @@
     });
   }
 
+  // ---- 動圖（被 LINE 轉成 MP4 的 GIF）：捲到畫面上才播放，離開就暫停 ----
+  const anims = document.querySelectorAll("video.anim");
+  if (anims.length && "IntersectionObserver" in window) {
+    const watcher = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) e.target.play().catch(() => {});
+        else e.target.pause();
+      });
+    });
+    anims.forEach((v) => watcher.observe(v));
+  }
+
   // ---- 從搜尋結果點進來時：顯示「返回搜尋結果」並標示關鍵字 ----
   const params = new URLSearchParams(location.search);
   const q = (params.get("q") || "").trim();

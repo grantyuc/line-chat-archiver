@@ -24,6 +24,8 @@ from .capture import image_path
 from .imgio import imread, imwrite, sniff
 from .imgmatch import SAME_PHOTO, features, score, similarity
 
+NEARBY_PHOTO = 0.65     # 依編號限定候選時的門檻（見 PhotoLibrary.match_nearby）
+NEARBY_MARGIN = 0.3     # 而且要比第二高的候選高出這麼多
 LINE_FILES = "/sdcard/Android/data/jp.naver.line.android/files"
 CHATS = LINE_FILES + "/chats"
 STICKERS = LINE_FILES + "/stickers"
@@ -163,7 +165,12 @@ class PhotoLibrary:
 
     def match_nearby(self, image, chat_dir, after, before, used):
         """縮圖索引找不到時，逐一比對編號相鄰的訊息：縮圖，再試一般版或原檔。
-        回傳 (編號或 None, [(編號, 有哪些版本, 一致比例)])。"""
+        回傳 (編號或 None, [(編號, 有哪些版本, 一致比例)])。
+
+        候選已經由前後訊息的編號限定在很小的範圍，所以門檻比全索引搜尋低：沒有一張達到
+        SAME_PHOTO 時，最高的一張達到 NEARBY_PHOTO、又明顯高於其他候選，也算對到。
+        影片縮圖在畫面上蓋著播放鍵和片長，一致比例常在 0.8 左右。
+        """
         tried = []
         for number in self.nearby(chat_dir, after, before, used):
             n = str(number)
@@ -178,6 +185,9 @@ class PhotoLibrary:
             tried.append((number, variants, round(best, 2)))
             if best >= SAME_PHOTO:
                 return n, tried
+        ranked = sorted(tried, key=lambda t: -t[2])
+        if ranked and ranked[0][2] >= NEARBY_PHOTO and (len(ranked) == 1 or ranked[0][2] - ranked[1][2] >= NEARBY_MARGIN):
+            return str(ranked[0][0]), tried
         return None, tried
 
     def detect_chat_dir(self, images, most=40, enough=3):
@@ -493,7 +503,8 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if chat_dir:
             photo_lib.build_index({chat_dir})
 
-    def photo_item(number, shot=None):
+    def photo_item(number, shot=None, photo=True):
+        """photo：這則是 [照片]。照片的快取是 GIF／APNG，或被 LINE 轉成 MP4 的動圖時，標成 anim。"""
         path, variant, kind = photo_lib.fetch(number)
         thumb_rel = f"media/photos/{number}_t.jpg"
         if not os.path.exists(os.path.join(site, thumb_rel)):
@@ -505,8 +516,11 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         full_rel = f"media/photos/{number}.{kind}"
         if not os.path.exists(os.path.join(site, full_rel)):
             shutil.copyfile(path, os.path.join(site, full_rel))
-        return {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
+        item = {"type": "video" if kind == "mp4" else "image", "src": thumb_rel, "full": full_rel,
                 "source": variant, "number": number}
+        if kind in ("gif", "apng") or (kind == "mp4" and photo):
+            item["anim"] = True
+        return item
 
     result, stats = {}, Counter()
     numbers, hidden = {}, []          # 訊息位置 -> 快取編號；橫排中沒露出來的照片
@@ -533,7 +547,7 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         elif msg.kind in ("photo", "video") and photo_lib and chat_dir:
             hit = photo_lib.lookup(image)
             if hit:
-                item = photo_item(hit[0])
+                item = photo_item(hit[0], photo=msg.kind == "photo")
                 numbers[pos] = int(hit[0])
         if item is None:
             item = {"type": "sticker" if msg.kind == "sticker" else "image",
@@ -560,7 +574,7 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if number is None:
             items[k]["tried"] = tried
             continue
-        items[k] = photo_item(number, image)
+        items[k] = photo_item(number, image, photo=chat.messages[pos].kind == "photo")
         numbers[pos] = int(number)
     for msg in chat.messages:
         for it in result.get(msg.idx, []):

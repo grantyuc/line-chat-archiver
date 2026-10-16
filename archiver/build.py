@@ -2,10 +2,13 @@
 import bisect
 import json
 import os
+import statistics
 from collections import Counter
 
 from .align import align, infer_me, summarize
-from .capture import Capture, sessions
+from .capture import Capture, chat_roi, dump_offset, planned_distance, sessions
+from .imgio import imread
+from .offset import LOW_SCORE, find_offset, overlap_diff
 from .media import expand_albums, resolve
 from .render import PAGE_MIN, render
 from .screen import parse_dump
@@ -51,6 +54,78 @@ def load_capture(workdir):
         join = records[-1].get("join_dy")
         parts.append((session, len(records), records[-1]))
     return steps, screens, paths, parts
+
+
+MATCH_DIFF = 8.0         # 重新比對位移時，重疊區平均灰階差的上限
+
+
+def recover_offsets(steps, screens, paths, window=10):
+    """擷取時判定不了的位移（None），用存下來的畫面再算一次：先比截圖，再比 dump，
+    兩者都要通過整個重疊區的檢查。
+    還是不行時用估計值，至少讓之後的列排在對的位置（位移不明時，之後每一列的位置都會差一整步，
+    和前面的列交錯，對齊時就會漏掉訊息）。各段擷取之間（更新擷取沒接上）不估計。
+
+    估計值：這一步原本要捲多遠（擷取時記下的 expect，或由上一張畫面重算），加上前後幾步
+    「實際位移 − 預定距離」的中位數；舊版擷取每步固定距離，這時改用前後幾步位移的中位數。
+    回傳 (各步位移, [(步, 位移, 方法)])。
+    """
+    offsets = [s["dy"] for s in steps]
+    rois = [chat_roi(sc, 420 * sc.width / 1080) for sc in screens]
+
+    def planned(j):
+        return steps[j].get("expect") or planned_distance(screens[j - 1], rois[j - 1])
+
+    def estimate(k):
+        session = steps[k].get("session")
+        near = [j for j in range(max(1, k - window), min(len(steps), k + window + 1))
+                if j != k and offsets[j] and offsets[j] > 0 and steps[j].get("session") == session
+                and steps[j - 1].get("session") == session]
+        if len(near) < 3:
+            return None
+        residual = [offsets[j] - planned(j) for j in near]
+        moved = [offsets[j] for j in near]
+        spread = lambda v: statistics.median(abs(x - statistics.median(v)) for x in v)
+        if spread(residual) <= spread(moved):
+            return int(planned(k) + statistics.median(residual))
+        return int(statistics.median(moved))
+
+    notes = []
+    for k in range(1, len(steps)):
+        if offsets[k] is not None:
+            continue
+        roi = rois[k - 1]
+        view = roi[1] - roi[0]
+        same_session = steps[k].get("session") == steps[k - 1].get("session")
+        guess = estimate(k) if same_session else None
+        a, b = imread(paths[k - 1]), imread(paths[k])
+        images = a is not None and b is not None and a.shape == b.shape
+
+        def fits(d):
+            """截圖的整個重疊區吻合；沒有截圖時，至少要在合理範圍、接近估計值。"""
+            if images:
+                return overlap_diff(a, b, roi, d) <= MATCH_DIFF
+            return 0 <= d <= view and (guess is None or abs(d - guess) <= view * 0.3)
+
+        dy, how = None, ""
+        if images:
+            found, score = find_offset(a, b, roi, guess)
+            if found is not None and score >= LOW_SCORE and fits(found):
+                dy, how = found, "截圖"
+        if dy is None:
+            found = dump_offset(screens[k - 1], screens[k])
+            if found is not None and fits(found):
+                dy, how = found, "dump"
+        if dy is None and guess is not None:
+            dy, how = guess, "估計"
+        offsets[k] = dy
+        notes.append((k, dy, how))
+    return offsets, notes
+
+
+def step_label(step):
+    """「第 123 步」或「更新 001 第 12 步」，用來在 capture 目錄裡找到那張畫面。"""
+    session = step.get("session")
+    return (f"更新 {session} " if session else "") + f"第 {step['step']} 步"
 
 
 def unsend_notices(rows, pairs, extra_rows):
@@ -105,10 +180,19 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
     report = [f"聊天室：{chat.title}，txt 共 {len(chat.messages)} 則訊息"]
     uniques, pairs, media, notices = [], [(None, 0.0)] * len(chat.messages), None, []
     if steps:
-        uniques, warnings = stitch(screens, [s["dy"] for s in steps])
+        offsets, recovered = recover_offsets(steps, screens, paths)
+        uniques, warnings = stitch(screens, offsets)
         rows = [u.row for u in uniques]
         report.append(f"擷取：{len(steps)} 步，去重後 {len(rows)} 列"
                       + ("" if steps and steps[-1].get("done") else "（尚未捲到最舊的訊息）"))
+        if recovered:
+            how = Counter(h for _, d, h in recovered if d is not None)
+            left = sum(1 for _, d, _ in recovered if d is None)
+            report.append(f"擷取時判定不了位移的步數：{len(recovered)} 步；重新比對 dump {how['dump']} 步、"
+                          f"截圖 {how['截圖']} 步，用估計值 {how['估計']} 步，仍不明 {left} 步")
+            for k, d, h in recovered:
+                if h == "估計":
+                    report.append(f"    {step_label(steps[k])}：用估計值 {d}px，前後的訊息可能重複出現")
         for session, count, last in parts:
             if session is None:
                 continue
@@ -131,18 +215,26 @@ def build(workdir, device=None, chat_dir=None, stickers=True, photos=True, refre
         for kind, (total, hit) in sorted(info["by_kind"].items(), key=lambda kv: -kv[1][0]):
             note = f"（其中 {shared[kind]} 則和同一批照片共用畫面上的一列）" if shared[kind] else ""
             report.append(f"    {kind}：{hit + shared[kind]} / {total}{note}")
-        missed = [m for m, s in zip(chat.messages, slots) if s is None]
+        missed = [i for i, s in enumerate(slots) if s is None]
         report.append(f"沒對到畫面的訊息：{len(missed)} 則")
-        for m in missed[:30]:
-            report.append(f"    {m.date} {m.time} {m.sender} {m.kind} {m.body[:20]!r}")
+        last_seen = None
+        seen_before = []                          # 每則訊息之前最近一則對到的列在哪一步
+        for s in slots:
+            seen_before.append(last_seen)
+            if s is not None:
+                last_seen = s[0]
+        for i in missed[:30]:
+            m, j = chat.messages[i], seen_before[i]
+            near = f"（前一則對到的在{step_label(steps[uniques[j].frame])}）" if j is not None else ""
+            report.append(f"    {m.date} {m.time} {m.sender} {m.kind} {m.body[:20]!r}{near}")
         notices = unsend_notices(rows, pairs, info["extra_rows"])
         inserted = {j for j, _ in notices}
+        others = [j for j in info["extra_rows"] if j not in inserted]
         report.append(f"低信心配對：{len(info['low_confidence'])} 則；畫面上多出來的列：{len(info['extra_rows'])} 列"
-                      f"（其中 {len(inserted)} 則收回通知已插入網頁）")
-        for j in info["extra_rows"][:30]:
+                      f"（其中 {len(inserted)} 則收回通知已插入網頁；其餘 {len(others)} 列）")
+        for j in others[:30]:
             r = rows[j]
-            mark = "（已插入網頁）" if j in inserted else ""
-            report.append(f"    多出來的列：{r.kind} {r.time} {r.side} {r.text[:40]!r}{mark}")
+            report.append(f"    多出來的列（{step_label(steps[uniques[j].frame])}）：{r.kind} {r.time} {r.side} {r.text[:40]!r}")
         with open(os.path.join(workdir, "alignment.json"), "w", encoding="utf-8") as f:
             json.dump([{"msg": m.idx, "row": j, "score": round(s or 0, 2),
                         "frame": uniques[j].frame if j is not None else None}

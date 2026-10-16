@@ -78,6 +78,12 @@ def _media_html(msg, items):
         src = html.escape(it["src"])
         if it["type"] == "sticker":
             parts.append(f'<img class="sticker" loading="lazy" src="{src}" alt="貼圖">')
+        elif it.get("anim") and it["type"] == "video":      # 被 LINE 轉成 MP4 的動圖：像 GIF 一樣自動循環播放
+            parts.append(f'<video class="anim" muted loop playsinline preload="none" poster="{src}" '
+                         f'src="{html.escape(it["full"])}"></video>')
+        elif it.get("anim"):                                  # GIF／APNG：直接顯示原檔才會動
+            full = html.escape(it["full"])
+            parts.append(f'<a class="photo" href="{full}"><img loading="lazy" src="{full}" alt="動圖"></a>')
         elif it["type"] == "video" and it.get("full"):
             parts.append(f'<video controls preload="none" poster="{src}" src="{html.escape(it["full"])}"></video>')
         else:

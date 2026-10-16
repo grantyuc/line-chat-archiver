@@ -32,10 +32,7 @@ def find_offset(a, b, roi, expect=None):
     找到的位置重疊區幾乎一致就直接採用，否則再加上全範圍的候選。
     """
     top, bottom, buffer = roi
-    ga = cv2.resize(cv2.cvtColor(a[top:bottom], cv2.COLOR_BGR2GRAY), None, fx=0.5, fy=0.5,
-                    interpolation=cv2.INTER_AREA)
-    gb = cv2.resize(cv2.cvtColor(b[top:bottom], cv2.COLOR_BGR2GRAY), None, fx=0.5, fy=0.5,
-                    interpolation=cv2.INTER_AREA)
+    ga, gb = _half_gray(a, top, bottom), _half_gray(b, top, bottom)
     skip = buffer // 2
     if _overlap_diff(ga, gb, 0, skip) < 1.0:                 # 兩張幾乎一樣：沒有動
         return 0, 1.0
@@ -59,6 +56,17 @@ def find_offset(a, b, roi, expect=None):
         return None, 0.0
     _, neg_score, dy = best
     return dy * 2, -neg_score
+
+
+def _half_gray(img, top, bottom):
+    return cv2.resize(cv2.cvtColor(img[top:bottom], cv2.COLOR_BGR2GRAY), None, fx=0.5, fy=0.5,
+                      interpolation=cv2.INTER_AREA)
+
+
+def overlap_diff(a, b, roi, dy):
+    """a 往下移 dy 後和 b 的重疊區平均灰階差（0～255）。同一段內容只剩 JPEG 雜訊，約 1～3。"""
+    top, bottom, buffer = roi
+    return _overlap_diff(_half_gray(a, top, bottom), _half_gray(b, top, bottom), dy // 2, buffer // 2)
 
 
 def _overlap_diff(ga, gb, dy, skip):

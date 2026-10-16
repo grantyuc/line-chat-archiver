@@ -76,6 +76,7 @@ main { max-width: var(--max); margin: 0 auto; padding: 12px 16px 48px; }
 .photo { display: block; line-height: 0; border-radius: 14px; overflow: hidden; background: var(--pill); }
 .photo img { display: block; max-width: min(280px, 100%); max-height: 360px; object-fit: cover; }
 video { display: block; max-width: min(280px, 100%); border-radius: 14px; background: #000; }
+video.anim { background: transparent; }
 .missing { padding: 8px 12px; border-radius: 14px; background: var(--pill); color: var(--pill-text); font-size: 13px; }
 
 .msg, .notice { scroll-margin-top: 110px; }  /* 跳到某則訊息時，不被頂端標題列和返回按鈕蓋住 */

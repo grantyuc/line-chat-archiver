@@ -2,7 +2,7 @@
 
 用動態規劃做序列對齊，配對分數依據：
 - 類型：文字對文字、貼圖對貼圖、照片對照片、影片對影片；系統訊息對系統訊息；檔案、位置等對「未知」列。
-- 文字相似度（文字訊息）。
+- 文字相似度（文字訊息）。只有 LINE 表情的文字訊息（txt 寫成「(笑)」）畫面上是表情圖，對沒有文字的未知列。
 - 時間：畫面上每則訊息都有時間，和 txt 相同加分、不同扣分。
 - 左右側：自己的訊息在右側。
 - 日期：列上方最近的日期條（例如「9月2日 週三」）和 txt 的日期一致加分。
@@ -15,6 +15,8 @@ MEDIA = ("sticker", "photo", "video")
 NON_BUBBLE = ("file", "voice", "contact", "location", "call", "unsend", "system", "other", "album", "note")
 SKIP = -1.0                  # 跳過一則訊息或一列的代價
 DATE_RE = re.compile(r"(\d{1,2})月(\d{1,2})日")
+# 只有 LINE 表情的訊息：txt 寫成「(笑)」「(smirk Moon)」，畫面上是放大的表情圖，沒有文字
+EMOJI_ONLY_RE = re.compile(r"^(\([^()\n]{1,24}\)\s*){1,3}$")
 
 
 def norm(text):
@@ -50,9 +52,12 @@ def row_days(rows):
 def pair_score(msg, row, day, use_side=True):
     """訊息和列配對的分數；不可能配對時回傳 None。"""
     if msg.kind == "text":
-        if row.kind != "text":
+        if row.kind == "unknown" and not row.text.strip() and EMOJI_ONLY_RE.match(msg.body.strip()):
+            score = 1.5
+        elif row.kind != "text":
             return None
-        score = 6 * text_similarity(msg.body, row.text) - 2
+        else:
+            score = 6 * text_similarity(msg.body, row.text) - 2
     elif msg.kind in MEDIA:
         if row.kind != msg.kind:
             return None

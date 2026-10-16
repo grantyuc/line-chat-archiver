@@ -130,6 +130,7 @@ def test_update_capture_joins_the_previous_capture(tmp_path):
     chat = parse(txt)
     save_chat(work, chat)
     old = FakeChat(split_at_day(items, 3), fast=True)                  # 第一次擷取時只有前三天
+    newest = old.offset                                                 # 第一次擷取的第一張畫面的位置
     Capture(old, work, idle_wait=0, log=lambda *a: None).run()
 
     device = FakeChat(items, fast=True)                                 # 之後多了第四天的訊息
@@ -141,6 +142,8 @@ def test_update_capture_joins_the_previous_capture(tmp_path):
     assert session2 == "001"
     steps = Capture(device, work, idle_wait=0, session=session2, join=join2, log=logs.append).run()
     assert steps[-1].get("join_dy") is not None and device.offset > 0   # 接上就停，沒有一路捲到頂
+    # 每天的時間都一樣（不同天同一時間的貼圖、照片），不能因此接錯位置
+    assert abs(steps[-1]["join_dy"] - (device.offset - newest)) <= 2
     assert next_update(work)[0] == "002"
 
     build(work, device=device, log=lambda *a: None)
@@ -162,3 +165,77 @@ def test_update_with_few_new_messages_joins_on_the_first_frame(tmp_path):
     steps = Capture(FakeChat(items, fast=True), work, idle_wait=0, session=session, join=join,
                     log=lambda *a: None).run()
     assert len(steps) == 1 and steps[0]["join_dy"] is not None
+
+
+def test_unknown_offsets_are_recovered_at_build(tmp_path, monkeypatch):
+    import archiver.build as B
+    from archiver.build import load_capture, recover_offsets
+    from archiver.stitch import stitch
+    work = str(tmp_path / "recover")
+    txt, items = make_chat(days=3, per_day=20, seed=5)
+    chat = parse(txt)
+    save_chat(work, chat)
+    device = FakeChat(items, fast=True)
+    Capture(device, work, idle_wait=0, log=lambda *a: None).run()
+    steps, screens, paths, _ = load_capture(work)
+    truth = [s["dy"] for s in steps]
+    broken = [3, 4, 7]
+    for k in broken:                                # 擷取時判定不了的步
+        steps[k]["dy"] = None
+        steps[k].pop("expect", None)                # 舊版擷取沒有記下預定距離
+    offsets, notes = recover_offsets(steps, screens, paths)
+    assert all(abs(offsets[k] - truth[k]) <= 2 for k in broken), ([offsets[k] for k in broken], notes)
+    uniques, warnings = stitch(screens, offsets)
+    assert warnings == [] and len(uniques) == len(items)
+
+    # dump 和截圖都比不出來時，用估計值：誤差要在去重的容許範圍內
+    monkeypatch.setattr(B, "dump_offset", lambda *a, **k: None)
+    offsets, notes = recover_offsets(steps, screens, ["/沒有這個檔案"] * len(paths))
+    assert {h for _, _, h in notes} == {"估計"}
+    assert all(abs(offsets[k] - truth[k]) <= 20 for k in broken)
+
+
+def test_nearby_match_accepts_a_clear_best_below_the_full_threshold():
+    from archiver.media import PhotoLibrary
+    lib = object.__new__(PhotoLibrary)
+    lib.entries = {str(n): {"dir": "u1", "thumb": ("x", 1)} for n in (10, 11, 12)}
+    lib.thumb_path = lambda n: __file__                          # 存在的檔案即可
+    scores = {"10": 0.0, "11": 0.81, "12": 0.05}                # 影片縮圖：蓋著播放鍵，只到 0.8 左右
+    lib.verify = lambda image, path, _s=iter(["10", "11", "12"]): scores[next(_s)]
+    number, tried = lib.match_nearby(None, "u1", 9, 13, set())
+    assert number == "11"
+    scores.update({"10": 0.78, "11": 0.81})                     # 兩張都接近：分不出來，不採用
+    lib.verify = lambda image, path, _s=iter(["10", "11", "12"]): scores[next(_s)]
+    assert lib.match_nearby(None, "u1", 9, 13, set())[0] is None
+
+
+def test_emoji_only_and_note_messages_align():
+    from archiver.align import align
+    from archiver.screen import Row
+    txt = "\r\n".join(["[LINE] 與C的聊天記錄", "儲存日期：2026/10/14 下午5:27", "",
+                       "2025/3/20（週四）", "20:17\tC\t早", "20:18\tC\tC已建立記事本。", "23:39\tC\t(笑)",
+                       "23:40\t我\t(smirk Moon)", "23:41\tC\t晚", ""])
+    chat = parse(txt, me="我")
+    assert [m.kind for m in chat.messages] == ["text", "note", "text", "text", "text"]
+    rows = [Row("text", (0, 0, 1, 1), text="早", time="20:17", side="other"),
+            Row("unknown", (0, 0, 1, 1), text="Double tap to open / 03/23 分享稿", time="20:18", side="other"),
+            Row("unknown", (0, 0, 1, 1), time="23:39", side="other"),
+            Row("unknown", (0, 0, 1, 1), time="23:40", side="self"),
+            Row("text", (0, 0, 1, 1), text="晚", time="23:41", side="other")]
+    assert [j for j, _ in align(chat.messages, rows)] == [0, 1, 2, 3, 4]
+
+
+def test_animated_photos_play_in_the_page(tmp_path):
+    from archiver.render import render
+    txt, _ = make_chat(days=1, per_day=3)
+    chat = parse(txt)
+    m1, m2 = chat.messages[0], chat.messages[1]
+    m1.kind = m2.kind = "photo"
+    media = {"media": {str(m1.idx): [{"type": "image", "src": "media/photos/1_t.jpg", "full": "media/photos/1.gif",
+                                      "source": "plain", "anim": True}],
+                       str(m2.idx): [{"type": "video", "src": "media/photos/2_t.jpg", "full": "media/photos/2.mp4",
+                                      "source": "plain", "anim": True}]}, "avatars": {}}
+    site = render(str(tmp_path), chat, media, log=lambda *a: None)
+    page = open(os.path.join(site, "2026-09.html"), encoding="utf-8").read()
+    assert '<img loading="lazy" src="media/photos/1.gif"' in page
+    assert '<video class="anim" muted loop playsinline' in page and "controls" not in page

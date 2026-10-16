@@ -27,6 +27,7 @@ PLACEHOLDERS = {
 CALL_RE = re.compile(r"^(☎\s*)?(通話時間\s*\d+:\d{2}(:\d{2})?|未接來電|無人接聽|您已結束通話|已取消通話|通話已取消)$")
 UNSEND_RE = re.compile(r"已收回訊息$")
 LOCATION_RE = re.compile(r"^\[\]\s.+\s:\shttps?://")
+NOTE_RE = re.compile(r"已建立記事本。?$")
 BRACKET_RE = re.compile(r"^\[[^\]]+\]$")
 
 
@@ -78,6 +79,8 @@ def classify(sender, body):
         return PLACEHOLDERS[text]
     if not sender:
         return "unsend" if UNSEND_RE.search(text) else "system"
+    if NOTE_RE.search(text) and "\n" not in text and len(text) <= 60:
+        return "note"
     if UNSEND_RE.search(text) and "\n" not in text and len(text) <= 40:
         return "unsend"
     if CALL_RE.match(text):

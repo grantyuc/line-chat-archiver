@@ -27,7 +27,7 @@ import cv2
 
 from .align import text_similarity
 from .imgio import imread
-from .offset import LOW_SCORE, find_offset, wait_still
+from .offset import LOW_SCORE, find_offset, overlap_diff, wait_still
 from .screen import parse_dump
 
 SLOW_DRAG = 0.5          # adb 模式的滑動有慣性，距離不固定，維持每步半個聊天區
@@ -66,6 +66,8 @@ def dump_offset(prev, cur, min_matches=1):
                 seen.setdefault(("whole",) + r.signature(), []).append((r, False, False))
             if r.text.strip():
                 seen.setdefault(("text", r.kind, r.side, r.text[:60]), []).append((r, cut_top, cut_bottom))
+            elif r.kind in ("sticker", "photo", "video") and r.time:     # 沒有文字的媒體列：以時間辨認
+                seen.setdefault(("media", r.kind, r.side, r.time, len(r.media)), []).append((r, cut_top, cut_bottom))
         return {k: v[0] for k, v in seen.items() if len(v) == 1}
 
     a, b = entries(prev), entries(cur)
@@ -86,17 +88,22 @@ def dump_offset(prev, cur, min_matches=1):
     return int(statistics.median(d for d, _ in agree))
 
 
+JOIN_DIFF = 8.0          # 接上上一段時，重疊區平均灰階差的上限（已讀、按鈕等小差異之外應幾乎一樣）
+
+
 def join_offset(img, screen, target_img, target_screen, roi):
     """更新擷取時，目前畫面和上一段擷取的第一張之間的位移；還沒接上時回傳 None。
-    接錯會漏掉中間的訊息，所以要求較嚴：dump 至少兩列吻合，或 dump 和截圖一致。"""
-    strong = dump_offset(screen, target_screen, min_matches=2)
-    guess = strong if strong is not None else dump_offset(screen, target_screen)
-    if guess is None:
+
+    接錯會漏掉中間所有的訊息，所以要求很嚴：dump 中的列吻合，截圖在同一個位移也吻合，
+    而且整個重疊區幾乎一樣（只比水平帶、或只比時間，都可能被每天同一時間的貼圖、有規律的
+    桌布騙到）。"""
+    guess = dump_offset(screen, target_screen)
+    if guess is None or img is None or target_img is None or img.shape != target_img.shape:
         return None
     dy, score = find_offset(img, target_img, roi, guess)
-    if dy is not None and score >= LOW_SCORE and abs(dy - guess) <= 6:
-        return dy
-    return strong
+    if dy is None or score < LOW_SCORE or abs(dy - guess) > 6:
+        return None
+    return dy if overlap_diff(img, target_img, roi, dy) <= JOIN_DIFF else None
 
 
 class Capture:
@@ -236,19 +243,7 @@ class Capture:
         return png, img, xml, screen, (dy_dump, found[1], "dump")
 
     def _distance(self, screen, roi):
-        """快速模式這一步要捲多遠（截圖像素）。
-
-        最上面被切掉、或頂端在浮動日期條底下的列，拖完後下緣要留在畫面內（再留一點餘裕），
-        下一步它就會完整出現。這一列比畫面還高、怎樣都無法完整出現時，直接捲最遠。
-        """
-        top, bottom, buffer = roi
-        view = bottom - top
-        most = int(view * self.drag)
-        cut = [r.bounds[3] for r in screen.rows if r.bounds[1] < top + buffer and r.bounds[3] > top]
-        if not cut:
-            return most
-        room = bottom - buffer - max(cut)
-        return most if room < view // 10 else min(most, room)
+        return planned_distance(screen, roi, self.drag)
 
     def _find_last_frame(self, prev_img, prev_screen, roi, width, height, back_steps=6):
         """接續時，找出目前畫面相對最後一步的位移。回傳 (截圖, 影像, dump, 畫面, (位移, 分數, 方法))。
@@ -276,12 +271,7 @@ class Capture:
         return None
 
     def _roi(self, screen):
-        top, bottom = screen.list_bounds[1], screen.list_bounds[3]
-        for o in screen.overlays:            # 釘在頂端的公告列
-            if o[1] <= top + 50 and o[3] < (top + bottom) / 2:
-                top = max(top, o[3])
-        _, _, dpi = self.device.screen_size()
-        return top, bottom, round(48 * dpi / 160)   # 再避開頂端 48dp 的浮動日期條
+        return chat_roi(screen, self.device.screen_size()[2])
 
     def _offset(self, prev_img, prev_screen, img, screen, roi, expect=None):
         dy, score = find_offset(prev_img, img, roi, expect)
@@ -404,6 +394,7 @@ class Capture:
                 finished, stuck = streak >= self.stop_after, False
             with self._timed("存檔"):
                 self._save(step, png, xml, {"dy": dy, "score": round(score, 3), "method": method, "done": finished,
+                                            **({"expect": distance} if fast else {}),
                                             **joined})
             recent.append((time.time(), dy))
             per_step = (recent[-1][0] - recent[0][0]) / (len(recent) - 1)
@@ -449,6 +440,31 @@ class Capture:
     def timing_summary(self, steps):
         parts = "、".join(f"{k} {v / steps:.2f}" for k, v in self.timing.items())
         return f"每步平均秒數：{parts}"
+
+
+def chat_roi(screen, dpi):
+    """比對用的聊天區：(上緣, 下緣, 頂端緩衝)。避開釘在頂端的公告列，以及頂端 48dp 的浮動日期條。"""
+    top, bottom = screen.list_bounds[1], screen.list_bounds[3]
+    for o in screen.overlays:
+        if o[1] <= top + 50 and o[3] < (top + bottom) / 2:
+            top = max(top, o[3])
+    return top, bottom, round(48 * dpi / 160)
+
+
+def planned_distance(screen, roi, drag=0.75):
+    """快速模式在這個畫面上要捲多遠（截圖像素）。
+
+    最上面被切掉、或頂端在浮動日期條底下的列，拖完後下緣要留在畫面內（再留一點餘裕），
+    下一步它就會完整出現。這一列比畫面還高、怎樣都無法完整出現時，直接捲最遠。
+    """
+    top, bottom, buffer = roi
+    view = bottom - top
+    most = int(view * drag)
+    cut = [r.bounds[3] for r in screen.rows if r.bounds[1] < top + buffer and r.bounds[3] > top]
+    if not cut:
+        return most
+    room = bottom - buffer - max(cut)
+    return most if room < view // 10 else min(most, room)
 
 
 def session_dir(workdir, session=None):
