@@ -282,3 +282,35 @@ def test_site_uses_colors_from_the_screenshots_and_rechecks_kinds(tmp_path):
     out = subprocess.run([sys.executable, "main.py", "find", word, "--work", work],
                          capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__))).stdout
     assert "main.py inspect" in out and "capture" in out
+
+
+def test_line_emoji_combo_stickers_and_reactions(tmp_path):
+    import json
+    import re
+    work = str(tmp_path / "extras")
+    txt, items = make_chat(days=4, per_day=25, seed=21, extras=True)
+    chat = parse(txt)
+    kinds = {it["kind"] for it in items}
+    assert {"emoji", "combo"} <= kinds and any(it.get("reaction") for it in items)
+    save_chat(work, chat)
+    device = FakeChat(items, fast=True)
+    Capture(device, work, idle_wait=0, log=lambda *a: None).run()
+    site = build(work, device=device, log=lambda *a: None)
+    report = open(os.path.join(work, "report.txt"), encoding="utf-8").read()
+    assert "沒對到畫面的訊息：0 則" in report, report[:1500]
+    media = json.load(open(os.path.join(work, "media.json"), encoding="utf-8"))
+    assert set(media["emoji"]) == {"(hahaha)", "(笑)"}
+    msg_items = [it for it in device.items if it["kind"] != "date"]
+    for msg, it in zip(chat.messages, msg_items):
+        got = media["media"].get(str(msg.idx))
+        if it["kind"] == "combo":
+            assert got[0]["source"] == "combo"
+        if it["kind"] == "emoji":
+            assert [g["name"] for g in got] == re.findall(r"\([^()]+\)", it["text"])
+        if it.get("reaction"):
+            assert [r["name"] for r in media["reactions"][str(msg.idx)]] == [it["reaction"]]
+        else:
+            assert str(msg.idx) not in media["reactions"]
+    page = "".join(open(os.path.join(site, f), encoding="utf-8").read() for f in os.listdir(site) if f.startswith("2026"))
+    assert '<div class="bubble">' in page and 'class="emoji" src="media/emoji/' in page    # 文字裡的 (hahaha) 換成圖
+    assert '<div class="emoji-only">' in page and '<div class="reactions">' in page

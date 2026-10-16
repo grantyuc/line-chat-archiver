@@ -168,15 +168,21 @@ def media_summary(chat, media):
             elif items[0]["source"] == "screenshot":
                 got["截圖裁切"] += 1
             elif items[0]["source"] == "custom":
-                got["訊息貼圖或拼拼樂（用截圖）"] += 1
+                got["訊息貼圖（用截圖）"] += 1
+            elif items[0]["source"] == "combo":
+                got["貼圖拼拼樂（用截圖）"] += 1
             else:
                 got["快取"] += 1
-        order = ("快取", "依編號推斷", "訊息貼圖或拼拼樂（用截圖）", "截圖裁切", "沒有圖")
+        order = ("快取", "依編號推斷", "訊息貼圖（用截圖）", "貼圖拼拼樂（用截圖）", "截圖裁切", "沒有圖")
         lines.append(f"    {kind}：共 {len(msgs)} 則，" + "、".join(f"{k} {got[k]}" for k in order if got[k]))
     voices = [m for m in chat.messages if m.kind == "voice"]
     if voices:
         played = sum(1 for m in voices if media["media"].get(str(m.idx)))
         lines.append(f"    voice：共 {len(voices)} 則，可以播放 {played}、沒有檔案 {len(voices) - played}")
+    if media.get("emoji"):
+        lines.append(f"    LINE 表情：從畫面學到 {len(media['emoji'])} 種，文字中的（名稱）換成圖片")
+    if media.get("reactions"):
+        lines.append(f"    回應：{len(media['reactions'])} 則訊息有回應")
     listed = 0
     for m in chat.messages:
         items = media["media"].get(str(m.idx))

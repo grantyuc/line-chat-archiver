@@ -106,6 +106,10 @@ class FakeChat:
                 height = 312
             elif it["kind"] == "voice":
                 height = 96
+            elif it["kind"] == "emoji":
+                height = 230
+            elif it["kind"] == "combo":
+                height = 456
             else:
                 height = 500
             height = it.get("height", height)
@@ -263,6 +267,10 @@ class FakeChat:
             width = 630
         elif it["kind"] == "voice":
             width = 280
+        elif it["kind"] == "emoji":
+            width = 220 * it["text"].count("(")
+        elif it["kind"] == "combo":
+            width = 667
         else:
             width = 388
         return (W - 21 - width, W - 21) if it.get("self") else (114, 114 + width)
@@ -297,6 +305,18 @@ class FakeChat:
                 if it.get("custom_text"):            # 訊息貼圖：使用者輸入的文字畫在貼圖上
                     cv2.putText(canvas, it["custom_text"], (x1 + 30, y1 + 200), cv2.FONT_HERSHEY_SIMPLEX, 2.2,
                                 (20, 20, 20), 7)
+            elif it["kind"] == "emoji":
+                for k, box in enumerate(self.emoji_boxes(it)):
+                    name = re.findall(r"\([^()]+\)", it["text"])[k]
+                    color = tuple(int(v) for v in np.random.default_rng(_seed(name)).integers(30, 200, 3))
+                    cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+                    cv2.circle(canvas, (cx, cy), 95, color, -1)
+                    cv2.circle(canvas, (cx - 35, cy - 25), 18, (255, 255, 255), -1)
+                    cv2.ellipse(canvas, (cx, cy + 30), (50, 25), 0, 0, 180, (255, 255, 255), 8)
+            elif it["kind"] == "combo":
+                for k, box in enumerate(self.combo_boxes(it)):
+                    bgra = make_sticker(_seed(it["idx"], "combo", k), box[2] - box[0], box[3] - box[1])
+                    canvas[box[1]:box[3], box[0]:box[2]] = composite(bgra, canvas[box[1]:box[3], box[0]:box[2]])
             elif it["kind"] == "voice":
                 cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 255), -1)
                 cv2.putText(canvas, f"{it['seconds']}s #{it['idx']}", (x1 + 90, y1 + 62), cv2.FONT_HERSHEY_SIMPLEX,
@@ -308,7 +328,27 @@ class FakeChat:
                 canvas[y1:y2, x1:x2] = it["display"]
             if it["avatar"]:
                 cv2.circle(canvas, (60, y1 + 40), 38, (90, 120, 200), -1)
+            if it.get("reaction"):
+                bx = self.reaction_box(it, 0)
+                cv2.circle(canvas, ((bx[0] + bx[2]) // 2, (bx[1] + bx[3]) // 2), 24,
+                           (40, 140, 250) if it["reaction"] == "有趣" else (60, 200, 60), -1)
         return canvas
+
+    # ---- 新類型的版面（整段對話座標；shift 換成畫面座標） ----
+    def emoji_boxes(self, it, shift=0):
+        x1, _ = self._x_span(it)
+        return [(x1 + 220 * k, it["y1"] + 5 - shift, x1 + 220 * (k + 1), it["y1"] + 225 - shift)
+                for k in range(it["text"].count("("))]
+
+    def combo_boxes(self, it, shift=0):
+        x1, _ = self._x_span(it)
+        y1 = it["y1"] - shift
+        return [(x1 + 114, y1, x1 + 544, y1 + 430), (x1, y1 + 186, x1 + 270, y1 + 456)]
+
+    def reaction_box(self, it, shift=0):
+        _, x2 = self._x_span(it)
+        y2 = it["y2"] - shift
+        return (x2 - 53, y2 - 53, x2, y2)
 
     def xml(self):
         rows = []
@@ -327,12 +367,28 @@ class FakeChat:
             elif it["kind"] == "voice":
                 rows.append(xmlgen.voice_row(y1, y2, it["seconds"], it["time"], it.get("self"),
                                              sender=it.get("sender", "") if it["avatar"] else ""))
+            elif it["kind"] == "emoji":
+                rows.append(xmlgen.emoji_row(y1, y2, self.emoji_boxes(it, it["y1"] - y1), it["time"], it.get("self"),
+                                             sender=it.get("sender", "") if it["avatar"] else ""))
+            elif it["kind"] == "combo":
+                rows.append(xmlgen.combo_row(y1, y2, self._x_span(it), self.combo_boxes(it, it["y1"] - y1), it["time"],
+                                             it.get("self"), sender=it.get("sender", "") if it["avatar"] else ""))
             else:
                 rows.append(xmlgen.media_row(y1, y2, it["kind"], it["time"], it.get("self"),
                                              sender=it.get("sender", "") if it["avatar"] else "",
                                              x_span=self._x_span(it) if not it.get("self") else (0, self._x_span(it)[1] - self._x_span(it)[0])))
+        for k, (it, y1, y2) in enumerate(self.visible()):              # 回應：加在那一列裡
+            if it.get("reaction"):
+                rows[k] = add_child(rows[k], xmlgen.reaction_node(it["reaction"], self.reaction_box(it, it["y1"] - y1)))
         xml = xmlgen.hierarchy((0, TOP, W, BOTTOM), rows)
         return clip_to_list(xml)
+
+
+def add_child(row, child):
+    """在 xmlgen 產生的節點字串裡加一個子節點。"""
+    if row.endswith("/>"):
+        return row[:-2] + ">" + child + "</node>"
+    return row[:-len("</node>")] + child + "</node>"
 
 
 def clip_to_list(xml):

@@ -11,6 +11,10 @@
   有「變更為格狀模式」按鈕（chat_ui_row_carousel_image_viewer_toggle_button）時是可左右滑的橫排，
   畫面上只露出前幾張，其餘不在 dump 裡（more_media=True）。
 - 通話紀錄：chat_ui_row_message_voip_history（語音通話結束 00:07）
+- 貼圖拼拼樂：combinationStickerRoot 底下 chatStickerImageViewFirst／Second／Third（貼圖互相重疊）
+- 只有 LINE 表情的訊息：root_view 底下 chat_ui_row_first_sticon_image（放大顯示，沒有泡泡）
+- 回應：chat_ui_row_normal_reaction_list_stub（描述「此則訊息收到了…表情回應」），
+  每個回應是 chat_ui_reaction_list_item_N，描述是回應的名稱（有趣、厲害…）
 - 蓋在聊天區上的元件：公告列 chat_ui_announcement_*、捲到最新按鈕 chat_ui_scroll_to_bottom_button
 """
 import re
@@ -20,11 +24,12 @@ from dataclasses import asdict, dataclass, field
 LINE_PKG = "jp.naver.line.android"
 LIST_ID = "chathistory_message_list"
 TIME_RE = re.compile(r"(上午|下午|午前|午後)?\s?(\d{1,2}):(\d{2})")
+STICON_RE = re.compile(r"chat_ui_row_\w*sticon_image")
 
 
 @dataclass
 class Row:
-    kind: str                      # text/sticker/photo/video/call/date/system/unknown
+    kind: str                      # text/sticker/photo/video/emoji/call/date/system/unknown
     bounds: tuple                  # 整列在螢幕上的範圍 (x1, y1, x2, y2)
     text: str = ""                 # 訊息文字、日期條文字，或未知列的描述
     time: str = ""                 # HH:MM（24 小時制）
@@ -35,6 +40,8 @@ class Row:
     avatar: tuple = ()
     date_label: str = ""           # 這一列上方的日期條（日期條也可能和訊息在同一列）
     more_media: bool = False       # 多張照片的橫排：還有照片沒露出來
+    combo: bool = False            # 貼圖拼拼樂（media 是整組的範圍）
+    reactions: list = field(default_factory=list)   # 回應：[(名稱, 範圍)]
     partial: bool = False          # 有一部分在聊天區外
     ids: list = field(default_factory=list)     # 這一列出現過的元件 id（除錯用）
 
@@ -103,6 +110,21 @@ def _row(node, width, list_bounds):
         elif rid == "chat_ui_row_sticker_view":
             row.kind, content = "sticker", b
             row.media.append(b)
+        elif rid == "combinationStickerRoot":                # 貼圖拼拼樂：整組當成一張貼圖
+            row.kind, row.combo, content = "sticker", True, b
+            row.media = [b]
+        elif rid.startswith("chatStickerImageView"):
+            pass
+        elif STICON_RE.fullmatch(rid):                        # 只有表情的訊息：每個表情一張圖
+            if row.kind in ("unknown", "emoji"):
+                row.kind = "emoji"
+                row.media.append(b)
+                content = b if content is None else (min(content[0], b[0]), min(content[1], b[1]),
+                                                     max(content[2], b[2]), max(content[3], b[3]))
+        elif rid == "chat_ui_row_normal_reaction_list_stub":
+            pass
+        elif rid.startswith("chat_ui_reaction_list_item_"):
+            row.reactions.append((desc, b))
         elif "carousel_image_viewer_toggle" in rid:
             row.more_media = True
         elif "voip_history" in rid and rid.endswith("voip_history"):
@@ -133,6 +155,8 @@ def _row(node, width, list_bounds):
         if not row.time and not row.avatar:
             row.side = "center"          # 置中的系統訊息（例如收回訊息）
     row.content = content or row.bounds
+    if row.kind == "emoji":
+        row.media.sort(key=lambda b: (b[1] // 50, b[0]))
     if not row.side:
         # 自己的訊息靠右貼齊螢幕邊緣；對方的訊息從頭像右側開始
         row.side = "self" if row.content[2] >= width - 40 and row.content[0] > width * 0.15 else "other"
@@ -167,4 +191,10 @@ def parse_dump(xml):
     rows = [_row(node, width, list_bounds) for node in _row_nodes(lst)]
     rows = [r for r in rows if r.bounds[3] > r.bounds[1]]
     rows.sort(key=lambda r: r.bounds[1])
-    return Screen(width, list_bounds, overlays, rows, has_line)
+    merged = []
+    for r in rows:                  # 單獨成一列的回應：屬於上面那則訊息
+        if r.kind == "unknown" and r.reactions and not r.time and not r.text and not r.media and merged:
+            merged[-1].reactions += r.reactions
+            continue
+        merged.append(r)
+    return Screen(width, list_bounds, overlays, merged, has_line)

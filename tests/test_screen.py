@@ -96,3 +96,48 @@ def test_real_unsend_notice_row():
                                  text="您已收回訊息")])])])])])])
     screen = parse_dump(hierarchy(LIST, [notice(791), notice(887)]))
     assert [(r.kind, r.text, r.side) for r in screen.rows] == [("system", "您已收回訊息", "center")] * 2
+
+
+def meta(x1, y1, hhmm, read=True):
+    """時間與已讀（實機：chat_ui_linear_layout_meta_data）。"""
+    from tests.xmlgen import h12
+    kids = [node("chat_ui_row_timestamp", "android.widget.TextView", (x1, y1 + 40, x1 + 118, y1 + 77), text=h12(hhmm))]
+    if read:
+        kids.insert(0, node("chat_ui_edited_and_read_container", "android.widget.LinearLayout",
+                            (x1 + 66, y1, x1 + 118, y1 + 40), children=[
+                                node("chat_ui_row_read_count", "android.widget.TextView", (x1 + 66, y1, x1 + 118, y1 + 37),
+                                     text="已讀")]))
+    return node("chat_ui_linear_layout_meta_data", "android.widget.LinearLayout", (x1, y1, x1 + 118, y1 + 80), children=kids)
+
+
+def test_real_combo_sticker_emoji_and_reactions():
+    """實機 dump（LINE 26.14）：貼圖拼拼樂、只有表情的訊息、回應。"""
+    def frame(y1, y2, kids):
+        return node("", bounds=(0, y1, 1080, y2), children=[node("", "android.widget.LinearLayout", (0, y1, 1080, y2), children=[
+            node("chat_ui_row_swipeable_framelayout", "android.view.ViewGroup", (0, y1 + 11, 1080, y2 - 11), children=[
+                node("chat_ui_row_clicktarget", "android.view.View", (0, y1 + 11, 1080, y2 - 11)),
+                node("chat_ui_row_contentview_container", "android.widget.FrameLayout", (0, y1 + 11, 1080, y2 - 11),
+                     children=[node("", "android.view.ViewGroup", (0, y1 + 11, 1080, y2 - 11), children=kids)])])])])
+
+    combo = frame(290, 768, [meta(261, 668, "22:42"), node("chat_ui_row_message_layout", bounds=(392, 301, 1059, 757), children=[
+        node("", bounds=(392, 301, 1059, 757), children=[node("combinationStickerRoot", "android.view.ViewGroup", (392, 301, 1059, 757), children=[
+            node("chatStickerImageViewFirst", "android.widget.ImageView", (506, 301, 936, 731)),
+            node("chatStickerImageViewSecond", "android.widget.ImageView", (392, 487, 662, 757)),
+            node("chatStickerImageViewThird", "android.widget.ImageView", (789, 405, 1059, 675))])])]),
+        node("chat_ui_row_normal_reaction_list_stub", "android.widget.LinearLayout", (1003, 700, 1056, 753),
+             desc="此則訊息收到了一個開心大笑的表情回應", children=[
+                 node("chat_ui_reaction_list_item_0", "android.widget.ImageView", (1003, 700, 1056, 753), desc="有趣")])])
+    sticon = frame(800, 1142, [meta(613, 1043, "12:26"), node("chat_ui_row_message_layout", bounds=(744, 811, 1059, 1131), children=[
+        node("root_view", "android.widget.LinearLayout", (744, 816, 1059, 1131), children=[
+            node("chat_ui_row_first_sticon_image", "android.widget.ImageView", (744, 816, 1059, 1131))])])])
+    # 有時回應自成一列（例如回覆別人的訊息時）：要歸給上面那則訊息
+    lone = frame(1142, 1220, [node("chat_ui_row_normal_reaction_list_stub", "android.widget.LinearLayout", (1003, 1160, 1056, 1213),
+                                   desc="此則訊息收到了一個豎起大拇指表示喜歡的表情回應", children=[
+                                       node("chat_ui_reaction_list_item_0", "android.widget.ImageView", (1003, 1160, 1056, 1213),
+                                            desc="厲害")])])
+    screen = parse_dump(hierarchy(LIST, [combo, sticon, lone]))
+    c, e = screen.rows
+    assert c.kind == "sticker" and c.combo and c.media == [(392, 301, 1059, 757)] and c.side == "self" and c.time == "22:42"
+    assert c.reactions == [("有趣", (1003, 700, 1056, 753))] and c.text == ""
+    assert e.kind == "emoji" and e.media == [(744, 816, 1059, 1131)] and e.time == "12:26" and e.side == "self"
+    assert [name for name, _ in e.reactions] == ["厲害"]

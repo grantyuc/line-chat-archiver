@@ -46,6 +46,24 @@ def crop(img, bounds):
     return img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
 
 
+EMOJI_RE = re.compile(r"\(([^()\n]{1,24})\)")
+
+
+def cut_out(image):
+    """放大顯示的表情沒有泡泡，周圍是聊天背景：把接近背景色（取四邊的中位數）的地方變透明。"""
+    ring = np.concatenate([image[0], image[-1], image[:, 0], image[:, -1]]).astype(np.int16)
+    background = np.median(ring, axis=0)
+    diff = np.abs(image.astype(np.int16) - background).max(axis=2)
+    alpha = np.clip((diff - 10) * 255 / 30, 0, 255).astype(np.uint8)
+    return np.dstack([image, alpha])
+
+
+def name_file(prefix, name):
+    """用名稱（例如「有趣」「(hahaha)」）當檔名的一部分不安全，改用雜湊。"""
+    import hashlib
+    return f"{prefix}{hashlib.md5(name.encode('utf-8')).hexdigest()[:12]}.png"
+
+
 def shrink(img, side=480):
     """縮到長邊不超過 side；img 為 None 時回傳 None。"""
     if img is None:
@@ -682,7 +700,10 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         if not image.size:
             continue
         item = None
-        if msg.kind == "sticker" and sticker_lib:
+        if msg.kind == "sticker" and uniques[slot[0]].row.combo:
+            # 貼圖拼拼樂：幾張貼圖疊在一起，用截圖才看得到整組
+            item = {"type": "sticker", "src": save_crop(f"{msg.idx}_{slot[1]}", image), "source": "combo"}
+        elif msg.kind == "sticker" and sticker_lib:
             hit = sticker_lib.lookup(image)
             if hit and hit[2] > CUSTOM_STICKER:
                 # 訊息貼圖（自己輸入的文字）、貼圖拼拼樂：快取裡只有底圖，用截圖才看得到全部
@@ -771,6 +792,48 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
         log(f"    語音訊息：{len(voice_pos)} 則，快取中有 {len(files) if files else 0} 個語音檔，"
             f"對到 {stats['voice:cache']} 則")
 
+    # LINE 表情：只有表情的訊息放大顯示，從截圖裁下每個表情，記住「名稱 → 圖」，
+    # 文字訊息裡的 (名稱) 也換成這張圖
+    emoji_map, emoji_size = {}, {}
+    os.makedirs(os.path.join(site, "media", "emoji"), exist_ok=True)
+    for msg, slot in zip(chat.messages, slots):
+        if slot is None or msg.kind != "text" or uniques[slot[0]].row.kind != "emoji":
+            continue
+        row = uniques[slot[0]].row
+        names = ["(" + n + ")" for n in EMOJI_RE.findall(msg.body)]
+        items = []
+        for name, box in zip(names, row.media):
+            image = crop(frames.get(uniques[slot[0]].frame), box)
+            if not image.size or box[3] - box[1] < (box[2] - box[0]) * 0.8:      # 被裁到一半的不用
+                continue
+            rel = f"media/emoji/{name_file('', name)}"
+            if image.shape[0] > emoji_size.get(name, 0):
+                imwrite(os.path.join(site, rel), cut_out(image))
+                emoji_map[name], emoji_size[name] = rel, image.shape[0]
+            items.append({"type": "emoji", "src": rel, "name": name, "source": "screenshot"})
+        if items:
+            result.setdefault(msg.idx, []).extend(items)
+            stats["emoji"] += 1
+
+    # 回應：從截圖裁下圖示，每種回應存一張
+    reactions, reaction_files = {}, {}
+    os.makedirs(os.path.join(site, "media", "reactions"), exist_ok=True)
+    for msg, (j, _) in zip(chat.messages, pairs):
+        if j is None or not uniques[j].row.reactions:
+            continue
+        shown = []
+        for name, box in uniques[j].row.reactions:
+            if name not in reaction_files:
+                image = crop(frames.get(uniques[j].frame), box)
+                if not image.size or abs((box[3] - box[1]) - (box[2] - box[0])) > 4:
+                    continue
+                reaction_files[name] = f"media/reactions/{name_file('', name)}"
+                imwrite(os.path.join(site, reaction_files[name]), image)
+            shown.append({"name": name, "src": reaction_files[name]})
+        if shown:
+            reactions[str(msg.idx)] = shown
+            stats["reaction"] += 1
+
     # 頭像以 txt 的發話者名稱存（畫面上的名稱可能是自己設的暱稱，和 txt 不同）
     avatars = {}
     for msg, (j, _) in zip(chat.messages, pairs):
@@ -784,7 +847,7 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
             avatars[msg.sender] = rel
 
     data = {"media": {str(k): v for k, v in result.items()}, "avatars": avatars, "chat_dir": chat_dir,
-            "stats": dict(stats)}
+            "emoji": emoji_map, "reactions": reactions, "stats": dict(stats)}
     with open(os.path.join(workdir, "media.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
     for key, n in sorted(stats.items()):

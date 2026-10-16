@@ -5,7 +5,8 @@ import random
 WEEK = "一二三四五六日"
 
 
-def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我", albums=False, voices=False):
+def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我", albums=False, voices=False, extras=False):
+    """extras：加入只有表情的訊息、文字夾表情、貼圖拼拼樂、回應。"""
     rng = random.Random(seed)
     lines = [f"[LINE] 與{partner}的聊天記錄", "儲存日期：2026/10/14 下午5:27", ""]
     items = []
@@ -25,6 +26,13 @@ def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我", albums=Fal
                 items.append({"kind": "album", "count": count, "text": "", "time": hhmm, "self": is_self,
                               "sender": sender})
                 continue
+            if extras and rng.random() < 0.12:
+                kind = rng.choice(["emoji", "combo"])
+                body = rng.choice(["(hahaha)", "(笑)", "(hahaha)(笑)"]) if kind == "emoji" else "[貼圖]"
+                lines.append(f"{hhmm}\t{sender}\t{body}")
+                items.append({"kind": kind, "text": body if kind == "emoji" else "", "time": hhmm, "self": is_self,
+                              "sender": sender, "reaction": "有趣" if rng.random() < 0.3 else None})
+                continue
             if voices and rng.random() < 0.1:
                 lines.append(f"{hhmm}\t{sender}\t[語音訊息]")
                 items.append({"kind": "voice", "text": "", "time": hhmm, "self": is_self, "sender": sender,
@@ -38,9 +46,13 @@ def make_chat(days=4, per_day=25, seed=1, partner="威廷", me="我", albums=Fal
                 body = text
             else:
                 body = {"sticker": "[貼圖]", "photo": "[照片]", "video": "[影片]"}[kind]
+            if extras and kind == "text" and rng.random() < 0.15:
+                text = body = text + "(hahaha)"
             first, *rest = body.split("\n")
             lines.append(f"{hhmm}\t{sender}\t{first}")
             lines.extend(rest)
             items.append({"kind": kind, "text": text, "time": hhmm, "self": is_self, "sender": sender})
+            if extras and rng.random() < 0.1:
+                items[-1]["reaction"] = rng.choice(["有趣", "厲害"])
         lines.append("")
     return "\r\n".join(lines) + "\r\n", items

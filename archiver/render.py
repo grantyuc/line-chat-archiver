@@ -94,7 +94,29 @@ def _media_html(msg, items):
     return "".join(parts)
 
 
-def _message_html(msg, media, avatar, show_head):
+EMOJI_TOKEN = re.compile(r"\([^()<>\n]{1,24}\)")
+
+
+def emojify(escaped, emoji):
+    """把已跳脫的文字中的 LINE 表情 (名稱) 換成圖；沒有圖的保留文字。"""
+    if not emoji:
+        return escaped
+
+    def swap(m):
+        src = emoji.get(html.unescape(m.group(0)))
+        return f'<img class="emoji" src="{html.escape(src)}" alt="{m.group(0)}" title="{m.group(0)}">' if src else m.group(0)
+    return EMOJI_TOKEN.sub(swap, escaped)
+
+
+def _reactions_html(reactions):
+    if not reactions:
+        return ""
+    icons = "".join(f'<img src="{html.escape(r["src"])}" alt="{html.escape(r["name"])}" title="{html.escape(r["name"])}">'
+                    for r in reactions)
+    return f'<div class="reactions">{icons}</div>'
+
+
+def _message_html(msg, media, avatar, show_head, emoji=None, reactions=None):
     side = "self" if msg.is_self else "other"
     t = f"<time>{msg.time}</time>"
     if msg.kind in ("unsend", "system"):
@@ -104,10 +126,14 @@ def _message_html(msg, media, avatar, show_head):
         content = _media_html(msg, media)
     elif msg.kind == "voice" and media:
         content = f'<div class="bubble voice"><audio controls preload="none" src="{html.escape(media[0]["src"])}"></audio></div>'
+    elif media and media[0]["type"] == "emoji":          # 只有表情：像 LINE 一樣放大、沒有泡泡
+        content = '<div class="emoji-only">' + "".join(
+            f'<img src="{html.escape(it["src"])}" alt="{html.escape(it["name"])}" title="{html.escape(it["name"])}">'
+            for it in media) + "</div>"
     else:
         icon = ICONS.get(msg.kind)
         attr = f' class="bubble icon" data-icon="{icon}"' if icon else ' class="bubble"'
-        content = f"<div{attr}>{linkify(msg.body)}</div>"
+        content = f"<div{attr}>{emojify(linkify(msg.body), emoji)}</div>"
     head = ""
     if side == "other":
         if show_head and avatar:
@@ -116,7 +142,7 @@ def _message_html(msg, media, avatar, show_head):
             head = '<span class="avatar blank"></span>'
     name = f'<div class="name">{html.escape(msg.sender)}</div>' if side == "other" and show_head else ""
     return (f'<div class="msg {side}" id="m{msg.idx}">{head}<div class="body">{name}'
-            f'<div class="line">{content}{t}</div></div></div>')
+            f'<div class="line">{content}{t}</div>{_reactions_html(reactions)}</div></div>')
 
 
 THEME_BUTTON = '<button class="theme" type="button" title="切換深色／淺色">🌙</button>'
@@ -150,6 +176,7 @@ def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, theme=Non
     media = media or {"media": {}, "avatars": {}}
     by_msg = media.get("media", {})
     avatars = media.get("avatars", {})
+    emoji, reactions = media.get("emoji", {}), media.get("reactions", {})
     title = chat.title or "LINE 聊天記錄"
 
     months = OrderedDict()
@@ -171,7 +198,8 @@ def render(workdir, chat, media=None, notices=None, page_min=PAGE_MIN, theme=Non
             key = (msg.sender, msg.is_self)
             show_head = key != last_key
             last_key = key if msg.kind not in ("unsend", "system") else None
-            out.append(_message_html(msg, by_msg.get(str(msg.idx), []), avatars.get(msg.sender), show_head))
+            out.append(_message_html(msg, by_msg.get(str(msg.idx), []), avatars.get(msg.sender), show_head,
+                                     emoji, reactions.get(str(msg.idx))))
             for text in (notices or {}).get(msg.idx, []):
                 out.append(f'<div class="notice"><span>{html.escape(text)}</span></div>')
                 last_key = None

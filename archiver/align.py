@@ -52,7 +52,12 @@ def row_days(rows):
 def pair_score(msg, row, day, use_side=True):
     """訊息和列配對的分數；不可能配對時回傳 None。"""
     if msg.kind == "text":
-        if row.kind == "unknown" and not row.text.strip() and EMOJI_ONLY_RE.match(msg.body.strip()):
+        emoji_only = EMOJI_ONLY_RE.match(msg.body.strip())
+        if row.kind == "emoji":
+            if not emoji_only:
+                return None
+            score = 3.0
+        elif row.kind == "unknown" and not row.text.strip() and emoji_only:
             score = 1.5
         elif row.kind != "text":
             return None

@@ -98,3 +98,40 @@ def album_row(y1, y2, hhmm, self_side, boxes, sender="", width=1080, carousel=Tr
     inner = node("", "android.view.ViewGroup", (0, y1, width, y2), children=kids)
     return node("", bounds=(0, y1, width, y2), children=[
         node("chat_ui_row_swipeable_framelayout", "android.view.ViewGroup", (0, y1, width, y2), children=[inner])])
+
+
+def _meta_nodes(x1, x2, y2, hhmm, self_side, sender, y1):
+    ts = (x1 - 110, y2 - 48, x1 - 7, y2 - 11) if self_side else (x2 + 13, y2 - 48, x2 + 116, y2 - 11)
+    kids = [node("chat_ui_row_timestamp", "android.widget.TextView", ts, text=h12(hhmm))]
+    if self_side:
+        kids.append(node("chat_ui_row_read_count", "android.widget.TextView", (ts[0], ts[1] - 40, ts[2], ts[1] - 3), text="已讀"))
+    elif sender:
+        kids.append(node("chat_ui_row_thumbnail", "android.widget.ImageView", (21, y1, 100, y1 + 79), desc=f"{sender}的個人圖片"))
+    return kids
+
+
+def reaction_node(name, box):
+    """訊息下方的回應（實機：chat_ui_row_normal_reaction_list_stub）。"""
+    return node("chat_ui_row_normal_reaction_list_stub", "android.widget.LinearLayout", box,
+                desc="此則訊息收到了一個表情回應",
+                children=[node("chat_ui_reaction_list_item_0", "android.widget.ImageView", box, desc=name)])
+
+
+def emoji_row(y1, y2, boxes, hhmm, self_side, sender="", width=1080):
+    """只有 LINE 表情的訊息（實機：root_view／chat_ui_row_first_sticon_image）。"""
+    names = ("first", "second", "third")
+    x1, x2 = boxes[0][0], boxes[-1][2]
+    kids = [node("root_view", "android.widget.LinearLayout", (x1, y1, x2, y2), children=[
+        node(f"chat_ui_row_{names[i]}_sticon_image", "android.widget.ImageView", b) for i, b in enumerate(boxes)])]
+    kids += _meta_nodes(x1, x2, y2, hhmm, self_side, sender, y1)
+    return node("chat_ui_row_swipeable_framelayout", bounds=(0, y1, width, y2), children=kids)
+
+
+def combo_row(y1, y2, x_span, boxes, hhmm, self_side, sender="", width=1080):
+    """貼圖拼拼樂（實機：combinationStickerRoot／chatStickerImageViewFirst…）。"""
+    names = ("First", "Second", "Third")
+    x1, x2 = x_span
+    kids = [node("combinationStickerRoot", "android.view.ViewGroup", (x1, y1, x2, y2), children=[
+        node(f"chatStickerImageView{names[i]}", "android.widget.ImageView", b) for i, b in enumerate(boxes)])]
+    kids += _meta_nodes(x1, x2, y2, hhmm, self_side, sender, y1)
+    return node("chat_ui_row_swipeable_framelayout", bounds=(0, y1, width, y2), children=kids)
