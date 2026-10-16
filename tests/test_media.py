@@ -228,3 +228,26 @@ def test_stale_cache_listing_is_refreshed_for_missed_photos(tmp_path):
     device.files.update(saved)                 # 之後 LINE 才把這張下載到快取；本機的快取清單已經過時
     data = resolve(str(work), chat, uniques, pairs, device=device, chat_dir=CHAT_ID, log=lambda *a: None)
     assert data["media"][str(msg.idx)][0]["number"] == late["number"]
+
+
+def test_chat_dir_found_even_when_the_oldest_photos_left_the_cache(tmp_path):
+    txt, items = make_chat(days=8, per_day=25, seed=11)
+    chat = parse(txt)
+    device = FakeChat(items)
+    photos = [it for it in device.items if it["kind"] == "photo"]
+    for it in photos[:8]:                                   # 最早的 8 張（舊版只試這幾張）已經不在快取裡
+        for suffix in (".thumb", "", ".original"):
+            device.files.pop(f"{CHATS}/{CHAT_ID}/messages/{it['number']}{suffix}", None)
+    assert len(photos) >= 12
+    work = tmp_path / "work"
+    cap = Capture(device, str(work), idle_wait=0, log=lambda *a: None)
+    steps = cap.run()
+    screens = []
+    for s in steps:
+        with open(cap.path(s["step"], "xml"), "rb") as f:
+            screens.append(parse_dump(f.read()))
+    uniques, _ = stitch(screens, [s["dy"] for s in steps])
+    pairs = align(chat.messages, [u.row for u in uniques])
+    data = resolve(str(work), chat, uniques, pairs, device=device, log=lambda *a: None)
+    assert data["chat_dir"] == CHAT_ID
+    assert data["stats"].get("photo:screenshot", 0) == 8

@@ -180,18 +180,27 @@ class PhotoLibrary:
                 return n, tried
         return None, tried
 
-    def detect_chat_dir(self, images):
-        """用幾張截圖中的照片，找出這個聊天室在快取中的目錄。"""
+    def detect_chat_dir(self, images, most=40, enough=3):
+        """用截圖中的照片找出這個聊天室在快取中的目錄。images 可以是產生器，依序取用；
+        最多試 most 張，有 enough 張對到同一個目錄就停。"""
         self.build_index()
-        votes = Counter()
+        votes, tried = Counter(), 0
         for image in images:
+            if image is None or not image.size:
+                continue
+            tried += 1
             hit = self.lookup(image)
             if hit:
                 votes[self.entries[hit[0]]["dir"]] += 1
+                if votes.most_common(1)[0][1] >= enough:
+                    break
+            if tried >= most:
+                break
         if not votes:
+            self.log(f"用 {tried} 張截圖中的照片找這個聊天室的快取目錄，都沒有對到。")
             return None
         chat_dir, count = votes.most_common(1)[0]
-        self.log(f"聊天室快取目錄：{chat_dir}（{count}/{len(images)} 張照片對到）")
+        self.log(f"聊天室快取目錄：{chat_dir}（試了 {tried} 張照片，{count} 張對到這個目錄）")
         return chat_dir
 
     def chat_numbers(self, chat_dir):
@@ -475,11 +484,12 @@ def resolve(workdir, chat, uniques, pairs, device=None, cache_dir=None, chat_dir
     if device is not None and photos and any(m.kind in ("photo", "video") for m in chat.messages):
         photo_lib = PhotoLibrary(device, cache_dir, chat_dir, refresh=refresh, log=log)
         if not chat_dir:
-            samples = [media_crop(s) for m, s in zip(chat.messages, slots) if s and m.kind == "photo"]
-            samples = [s for s in samples if s is not None and s.size][:8]
-            chat_dir = photo_lib.detect_chat_dir(samples) if samples else None
+            # 從最新的照片往前試：舊照片可能早就不在手機的快取裡
+            newest_first = [s for m, s in zip(reversed(chat.messages), reversed(slots)) if s and m.kind == "photo"]
+            chat_dir = photo_lib.detect_chat_dir(media_crop(s) for s in newest_first)
             if not chat_dir:
-                log("找不到這個聊天室的照片快取，照片改用截圖裁切。")
+                log("找不到這個聊天室的照片快取，照片改用截圖裁切。也可以用 --chat-dir 直接指定"
+                    "（u/c/m 開頭的目錄名，找法見 poc/README.md 的測試 7）。")
         if chat_dir:
             photo_lib.build_index({chat_dir})
 
