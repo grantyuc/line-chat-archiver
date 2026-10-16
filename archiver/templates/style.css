@@ -82,12 +82,20 @@ video.anim { background: transparent; }
 .missing { padding: 8px 12px; border-radius: 14px; background: var(--pill); color: var(--pill-text); font-size: 13px; }
 
 .msg, .notice { scroll-margin-top: 110px; }  /* 跳到某則訊息時，不被頂端標題列和返回按鈕蓋住 */
-.back-to-results {
+.search-nav {
   position: sticky; top: 52px; z-index: 5;
-  display: inline-block; margin: 4px 0 8px; padding: 6px 14px; border-radius: 16px;
-  background: var(--bar); color: var(--bar-text); text-decoration: none; font-size: 13.5px;
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  margin: 4px 0 8px; padding: 4px 6px 4px 14px; border-radius: 18px;
+  background: var(--bar); color: var(--bar-text); font-size: 13.5px;
 }
-.msg:target .bubble, .msg:target .photo, .msg:target .sticker { outline: 3px solid var(--mark); outline-offset: 2px; }
+.search-nav .back { color: inherit; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-nav .count { margin: 0 4px; opacity: .8; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.search-nav button {
+  width: 30px; height: 28px; border: 0; border-radius: 14px; cursor: pointer;
+  background: rgba(255, 255, 255, .18); color: inherit; font-size: 12px;
+}
+.msg:target .bubble, .msg:target .photo, .msg:target .sticker,
+.msg.current .bubble, .msg.current .photo, .msg.current .sticker { outline: 3px solid var(--mark); outline-offset: 2px; }
 mark { background: var(--mark); color: inherit; border-radius: 3px; }
 
 nav.pager { display: flex; justify-content: space-between; max-width: var(--max); margin: 0 auto; padding: 0 16px 24px; }

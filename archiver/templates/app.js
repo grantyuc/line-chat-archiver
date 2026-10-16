@@ -62,18 +62,68 @@
     anims.forEach((v) => watcher.observe(v));
   }
 
-  // ---- 從搜尋結果點進來時：顯示「返回搜尋結果」並標示關鍵字 ----
+  // ---- 從搜尋結果點進來時：搜尋列（返回搜尋結果、上一個／下一個），並標示關鍵字 ----
   const params = new URLSearchParams(location.search);
   const q = (params.get("q") || "").trim();
   const chat = document.querySelector("main.chat");
   if (q && chat) {
     const back = "index.html?q=" + encodeURIComponent(q);
-    const bar = document.createElement("a");
-    bar.className = "back-to-results";
-    bar.href = back;
-    bar.textContent = "‹ 返回「" + q + "」的搜尋結果";
+    const bar = document.createElement("div");
+    bar.className = "search-nav";
+    bar.innerHTML = '<a class="back"></a><span class="count"></span>' +
+      '<button type="button" class="prev" title="上一個（Shift+Enter）">▲</button>' +
+      '<button type="button" class="next" title="下一個（Enter）">▼</button>';
+    const backLink = bar.querySelector(".back");
+    backLink.href = back;
+    backLink.textContent = "‹「" + q + "」";
+    backLink.title = "返回搜尋結果";
     chat.prepend(bar);
     document.querySelectorAll('header.bar a[href="index.html"]').forEach((a) => { a.href = back; });
+
+    // 所有月份頁的搜尋結果，順序和首頁的搜尋結果一樣；下一個在別頁就直接開那一頁
+    const here = decodeURIComponent(location.pathname.split("/").pop());
+    const count = bar.querySelector(".count");
+    const markCurrent = (id) => {
+      document.querySelectorAll(".msg.current").forEach((el) => el.classList.remove("current"));
+      const el = document.getElementById("m" + id);
+      if (el) el.classList.add("current");
+      return el;
+    };
+    const setup = () => {
+      const lowerQ = q.toLowerCase();
+      const hits = (window.SEARCH_INDEX || []).filter((e) => e[5].toLowerCase().includes(lowerQ));
+      let cur = hits.findIndex((e) => e[0] === here && "#m" + e[1] === location.hash);
+      if (cur < 0) cur = hits.findIndex((e) => e[0] === here);
+      const show = () => { count.textContent = hits.length ? (cur + 1) + " / " + hits.length : "沒有找到"; };
+      const go = (k) => {
+        if (!hits.length) return;
+        cur = (k + hits.length) % hits.length;
+        const [page, id] = hits[cur];
+        const url = page + "?q=" + encodeURIComponent(q) + "#m" + id;
+        if (page !== here) { location.href = url; return; }
+        history.replaceState(null, "", url);
+        const el = markCurrent(id);
+        if (el) el.scrollIntoView({ block: "center" });
+        show();
+      };
+      bar.querySelector(".prev").addEventListener("click", () => go(cur - 1));
+      bar.querySelector(".next").addEventListener("click", () => go(cur + 1));
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.target.closest("input, textarea, button, a")) return;
+        e.preventDefault();
+        go(e.shiftKey ? cur - 1 : cur + 1);
+      });
+      if (cur >= 0) markCurrent(hits[cur][1]);
+      show();
+    };
+    if (window.SEARCH_INDEX) {
+      setup();
+    } else {                                    // 月份頁平常不載入搜尋資料；有搜尋時才載入
+      const s = document.createElement("script");
+      s.src = "assets/search-index.js";
+      s.onload = setup;
+      document.head.appendChild(s);
+    }
 
     const lower = q.toLowerCase();
     document.querySelectorAll(".bubble").forEach((el) => {
